@@ -38,8 +38,11 @@ skill_signing = "required"
 audit_log = true
 
 [heartbeat]
-interval = "30m"
-checklist = "HEARTBEAT.md"
+enabled = false      # Enable autonomous heartbeat loop
+interval = "30m"     # How often to check (s/m/h/d)
+checklist = "HEARTBEAT.md"  # Task checklist file in workspace
+# report_to = ""    # Chat ID to send heartbeat reports to
+# active_hours = "08:00-22:00"  # Only fire heartbeats within this window (local time)
 
 [cron]
 storage = "sqlite"

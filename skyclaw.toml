@@ -31,8 +31,10 @@ skill_signing = "required"
 audit_log = true
 
 [heartbeat]
+enabled = false
 interval = "30m"
 checklist = "HEARTBEAT.md"
+# report_to = ""  # Set to your Telegram chat ID for heartbeat reports
 
 [cron]
 storage = "sqlite"

@@ -226,17 +226,30 @@ pub struct RateLimitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatConfig {
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default = "default_heartbeat_interval")]
     pub interval: String,
     #[serde(default = "default_heartbeat_checklist")]
     pub checklist: String,
+    /// Chat ID to send heartbeat reports to (e.g. Telegram chat).
+    /// If unset, heartbeat responses are only logged.
+    #[serde(default)]
+    pub report_to: Option<String>,
+    /// Active hours window (24h format). Heartbeats only fire within
+    /// this range. Example: "08:00-22:00". Unset = always active.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             interval: "30m".to_string(),
             checklist: "HEARTBEAT.md".to_string(),
+            report_to: None,
+            active_hours: None,
         }
     }
 }
@@ -363,7 +376,7 @@ mod tests {
             vault: VaultConfig::default(),
             filestore: FileStoreConfig::default(),
             security: SecurityConfig::default(),
-            heartbeat: HeartbeatConfig::default(),
+            heartbeat: HeartbeatConfig { enabled: true, ..Default::default() },
             cron: CronConfig::default(),
             channel: HashMap::new(),
             agent: AgentConfig::default(),

@@ -149,20 +149,56 @@ async fn main() -> Result<()> {
                 config.agent.max_context_tokens,
             ));
 
-            // Spawn Telegram message processing loop
-            if let (Some(mut rx), Some(tg_sender)) = (tg_rx, primary_channel.clone()) {
-                let agent_clone = agent.clone();
-                tokio::spawn(async move {
-                    while let Some(mut inbound) = rx.recv().await {
-                        let agent = agent_clone.clone();
-                        let sender = tg_sender.clone();
-                        tokio::spawn(async move {
-                            let workspace_path = dirs::home_dir()
-                                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                .join(".skyclaw")
-                                .join("workspace");
-                            std::fs::create_dir_all(&workspace_path).ok();
+            // Unified message channel — all sources (Telegram, heartbeat, future
+            // channels) feed into a single processing loop.
+            let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<skyclaw_core::types::message::InboundMessage>(32);
 
+            // Wire Telegram messages into the unified channel
+            if let Some(mut tg_rx) = tg_rx {
+                let tx = msg_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(msg) = tg_rx.recv().await {
+                        if tx.send(msg).await.is_err() { break; }
+                    }
+                });
+            }
+
+            // Start heartbeat if enabled
+            let workspace_path = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".skyclaw")
+                .join("workspace");
+            std::fs::create_dir_all(&workspace_path).ok();
+
+            if config.heartbeat.enabled {
+                let heartbeat_chat_id = config.heartbeat.report_to.clone()
+                    .unwrap_or_else(|| "heartbeat".to_string());
+                let runner = skyclaw_automation::HeartbeatRunner::new(
+                    config.heartbeat.clone(),
+                    workspace_path.clone(),
+                    heartbeat_chat_id,
+                );
+                let hb_tx = msg_tx.clone();
+                tokio::spawn(async move {
+                    runner.run(hb_tx).await;
+                });
+                tracing::info!(
+                    interval = %config.heartbeat.interval,
+                    checklist = %config.heartbeat.checklist,
+                    "Heartbeat runner started"
+                );
+            }
+
+            // Unified message processing loop
+            if let Some(sender) = primary_channel.clone() {
+                let agent_clone = agent.clone();
+                let ws_path = workspace_path.clone();
+                tokio::spawn(async move {
+                    while let Some(mut inbound) = msg_rx.recv().await {
+                        let agent = agent_clone.clone();
+                        let sender = sender.clone();
+                        let workspace_path = ws_path.clone();
+                        tokio::spawn(async move {
                             // Download attachments and save to workspace
                             if !inbound.attachments.is_empty() {
                                 if let Some(ft) = sender.file_transfer() {
@@ -181,7 +217,6 @@ async fn main() -> Result<()> {
                                                     ));
                                                 }
                                             }
-                                            // Prepend file info to the message text
                                             if !file_notes.is_empty() {
                                                 let prefix = file_notes.join("\n");
                                                 let existing = inbound.text.take().unwrap_or_default();
@@ -196,9 +231,9 @@ async fn main() -> Result<()> {
                             }
 
                             let mut session = skyclaw_core::types::session::SessionContext {
-                                session_id: format!("tg-{}", inbound.chat_id),
+                                session_id: format!("{}-{}", inbound.channel, inbound.chat_id),
                                 user_id: inbound.user_id.clone(),
-                                channel: "telegram".to_string(),
+                                channel: inbound.channel.clone(),
                                 chat_id: inbound.chat_id.clone(),
                                 history: Vec::new(),
                                 workspace_path,
