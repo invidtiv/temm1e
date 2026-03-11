@@ -431,6 +431,7 @@ fn default_model(provider_name: &str) -> &'static str {
     match provider_name {
         "anthropic" => "claude-sonnet-4-6",
         "openai" => "gpt-5.2",
+        "openai-codex" => "gpt-5.4",
         "gemini" => "gemini-3-flash-preview",
         "grok" | "xai" => "grok-4-1-fast-non-reasoning",
         "openrouter" => "anthropic/claude-sonnet-4-6",
@@ -746,6 +747,7 @@ fn build_system_prompt() -> String {
     );
     prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
     prompt.push_str("- minimax: MiniMax-M2.5\n");
+    prompt.push_str("- openai-codex: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex (OAuth subscription)\n");
 
     // ── Vision capability ──────────────────────────────────────
     prompt.push_str(
@@ -4285,7 +4287,7 @@ Just type a message to chat with the AI agent.";
                         println!("\n  To use Codex, set your config to:");
                         println!("    [provider]");
                         println!("    name = \"openai-codex\"");
-                        println!("    model = \"gpt-5.3-codex\"");
+                        println!("    model = \"gpt-5.4\"");
                     }
                     Err(e) => {
                         eprintln!("Authentication failed: {}", e);
@@ -4501,6 +4503,7 @@ mod tests {
     fn default_models_all_providers() {
         assert_eq!(default_model("anthropic"), "claude-sonnet-4-6");
         assert_eq!(default_model("openai"), "gpt-5.2");
+        assert_eq!(default_model("openai-codex"), "gpt-5.4");
         assert_eq!(default_model("gemini"), "gemini-3-flash-preview");
         assert_eq!(default_model("grok"), "grok-4-1-fast-non-reasoning");
         assert_eq!(default_model("xai"), "grok-4-1-fast-non-reasoning");
