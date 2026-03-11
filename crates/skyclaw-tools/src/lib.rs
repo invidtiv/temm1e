@@ -3,6 +3,7 @@
 #[cfg(feature = "browser")]
 mod browser;
 mod check_messages;
+pub mod custom_tools;
 mod file;
 mod git;
 mod key_manage;
@@ -16,6 +17,7 @@ mod web_fetch;
 #[cfg(feature = "browser")]
 pub use browser::BrowserTool;
 pub use check_messages::{CheckMessagesTool, PendingMessages};
+pub use custom_tools::{CustomToolRegistry, SelfCreateTool};
 pub use file::{FileListTool, FileReadTool, FileWriteTool};
 pub use git::GitTool;
 pub use key_manage::KeyManageTool;

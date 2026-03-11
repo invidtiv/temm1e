@@ -72,7 +72,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the SkyClaw gateway daemon
-    Start,
+    Start {
+        /// Run as a background daemon (requires prior setup via `skyclaw start` first)
+        #[arg(short, long)]
+        daemon: bool,
+        /// Log file path when running as daemon (default: ~/.skyclaw/skyclaw.log)
+        #[arg(long)]
+        log: Option<String>,
+    },
+    /// Stop a running daemon
+    Stop,
     /// Interactive CLI chat with the agent
     Chat,
     /// Show gateway status, connected channels, provider health
@@ -530,6 +539,46 @@ async fn save_credentials(
     Ok(())
 }
 
+// ── Daemon helpers ───────────────────────────────────────────────────────
+
+/// Get the path to the PID file: `~/.skyclaw/skyclaw.pid`
+fn pid_file_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".skyclaw").join("skyclaw.pid"))
+}
+
+/// Write the current process PID to the PID file.
+fn write_pid_file() {
+    if let Some(path) = pid_file_path() {
+        let _ = std::fs::write(&path, std::process::id().to_string());
+    }
+}
+
+/// Remove the PID file.
+fn remove_pid_file() {
+    if let Some(path) = pid_file_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Read the PID from the PID file.
+fn read_pid_file() -> Option<u32> {
+    let path = pid_file_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    content.trim().parse().ok()
+}
+
+/// Check if a process with the given PID is still running.
+fn is_process_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{}", pid)).exists()
+        || std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+}
+
 /// Load the active provider's credentials (backwards-compatible return type).
 /// Filters out placeholder/dummy keys — returns None if no valid key exists.
 fn load_saved_credentials() -> Option<(String, String, String)> {
@@ -771,6 +820,32 @@ SAFETY RULES:\n\
 - If install fails, tell the user and suggest alternatives or manual setup.\n\
 - Keep server names short: 'playwright', 'postgres', 'github'.\n\
 - Use mcp_manage(action='list') to check what's already connected.",
+    );
+
+    // ── Custom tool authoring ────────────────────────────────────
+    prompt.push_str(
+        "\n\n\
+CUSTOM TOOL AUTHORING — SELF-CREATE:\n\
+You can create your own tools at runtime using self_create_tool. Created tools \
+persist across sessions in ~/.skyclaw/custom-tools/.\n\n\
+HOW IT WORKS:\n\
+1. Call self_create_tool with action='create', providing: name, description, \
+   language (bash/python/node), script content, and a JSON Schema for parameters.\n\
+2. The script receives input as JSON via stdin and should write output to stdout.\n\
+3. The tool becomes available immediately — no restart needed.\n\n\
+WHEN TO CREATE A TOOL:\n\
+- User asks for a repeatable task (e.g., 'check my server status', 'format this data').\n\
+- You find yourself running the same shell commands repeatedly.\n\
+- A task would benefit from a dedicated, named, reusable tool.\n\n\
+ACTIONS:\n\
+- create: Write a new script tool (name + description + language + script + parameters).\n\
+- list: Show all custom tools.\n\
+- delete: Remove a custom tool by name.\n\n\
+RULES:\n\
+- Keep scripts simple and focused — one tool, one job.\n\
+- Always test the tool after creating it by calling it once.\n\
+- Tool names must be alphanumeric with underscores/hyphens (e.g., 'check_status').\n\
+- Scripts have a 30-second timeout. For long tasks, use async patterns.",
     );
 
     prompt
@@ -1327,7 +1402,161 @@ async fn main() -> Result<()> {
     tracing::info!(mode = %cli.mode, "SkyClaw starting");
 
     match cli.command {
-        Commands::Start => {
+        Commands::Stop => {
+            match read_pid_file() {
+                Some(pid) if is_process_alive(pid) => {
+                    // Send SIGTERM on Unix, taskkill on Windows
+                    #[cfg(unix)]
+                    {
+                        let status = std::process::Command::new("kill")
+                            .args(["-TERM", &pid.to_string()])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => {
+                                remove_pid_file();
+                                println!("SkyClaw daemon (PID {}) stopped.", pid);
+                            }
+                            _ => {
+                                eprintln!("Failed to stop SkyClaw daemon (PID {}).", pid);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    #[cfg(windows)]
+                    {
+                        let status = std::process::Command::new("taskkill")
+                            .args(["/PID", &pid.to_string(), "/F"])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => {
+                                remove_pid_file();
+                                println!("SkyClaw daemon (PID {}) stopped.", pid);
+                            }
+                            _ => {
+                                eprintln!("Failed to stop SkyClaw daemon (PID {}).", pid);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+                Some(pid) => {
+                    eprintln!(
+                        "SkyClaw daemon (PID {}) is not running. Cleaning up stale PID file.",
+                        pid
+                    );
+                    remove_pid_file();
+                }
+                None => {
+                    eprintln!("No SkyClaw daemon running (no PID file found).");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Start { daemon, log } => {
+            // ── Daemon mode ──────────────────────────────────────
+            if daemon {
+                let skyclaw_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".skyclaw");
+                let _ = std::fs::create_dir_all(&skyclaw_dir);
+
+                // Check for saved credentials — daemon requires prior setup
+                let creds_path = skyclaw_dir.join("credentials.toml");
+                if !creds_path.exists() {
+                    eprintln!(
+                        "Error: No saved credentials found at {}\n\n\
+                         First-time setup requires foreground mode to complete onboarding.\n\
+                         Run `skyclaw start` (without -d) first, then use -d for subsequent runs.",
+                        creds_path.display()
+                    );
+                    std::process::exit(1);
+                }
+
+                // Check if already running
+                if let Some(pid) = read_pid_file() {
+                    if is_process_alive(pid) {
+                        eprintln!(
+                            "SkyClaw daemon is already running (PID {}). Use `skyclaw stop` first.",
+                            pid
+                        );
+                        std::process::exit(1);
+                    }
+                    // Stale PID file — clean up
+                    remove_pid_file();
+                }
+
+                // Resolve log path
+                let log_path = log
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| skyclaw_dir.join("skyclaw.log"));
+
+                // Re-exec ourselves as a detached child
+                let exe = std::env::current_exe().expect("cannot resolve own executable path");
+                let mut args: Vec<String> = std::env::args().collect();
+                // Remove --daemon / -d flag so the child runs in foreground
+                args.retain(|a| a != "--daemon" && a != "-d");
+                // Remove --log and its value too
+                let mut skip_next = false;
+                args.retain(|a| {
+                    if skip_next {
+                        skip_next = false;
+                        return false;
+                    }
+                    if a == "--log" {
+                        skip_next = true;
+                        return false;
+                    }
+                    if a.starts_with("--log=") {
+                        return false;
+                    }
+                    true
+                });
+
+                let log_file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Cannot open log file {}: {}", log_path.display(), e);
+                        std::process::exit(1);
+                    });
+                let log_err = log_file.try_clone().unwrap_or_else(|e| {
+                    eprintln!("Cannot clone log file handle: {}", e);
+                    std::process::exit(1);
+                });
+
+                let child = std::process::Command::new(exe)
+                    .args(&args[1..]) // skip argv[0]
+                    .stdout(log_file)
+                    .stderr(log_err)
+                    .stdin(std::process::Stdio::null())
+                    .spawn();
+
+                match child {
+                    Ok(c) => {
+                        // Write child PID
+                        let child_pid = c.id();
+                        if let Some(path) = pid_file_path() {
+                            let _ = std::fs::write(&path, child_pid.to_string());
+                        }
+                        println!(
+                            "SkyClaw daemon started (PID {}).\n  Log: {}\n  Stop: skyclaw stop",
+                            child_pid,
+                            log_path.display()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to start daemon: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
+            }
+
+            // ── Normal foreground start ──────────────────────────
+            // Write PID file so `skyclaw stop` works even in foreground
+            write_pid_file();
+
             tracing::info!("Starting SkyClaw gateway");
 
             // ── Resolve API credentials ────────────────────────
@@ -1417,6 +1646,19 @@ async fn main() -> Result<()> {
                 Some(usage_store.clone()),
             );
             tracing::info!(count = tools.len(), "Tools initialized");
+
+            // ── Custom script tools (user/agent-authored) ──────
+            let custom_tool_registry = Arc::new(skyclaw_tools::CustomToolRegistry::new());
+            {
+                let custom_tools = custom_tool_registry.load_tools();
+                if !custom_tools.is_empty() {
+                    tracing::info!(count = custom_tools.len(), "Custom script tools loaded");
+                    tools.extend(custom_tools);
+                }
+                tools.push(Arc::new(skyclaw_tools::SelfCreateTool::new(
+                    custom_tool_registry.clone(),
+                )));
+            }
 
             // ── MCP servers (external tool sources) ──────────
             #[cfg(feature = "mcp")]
@@ -1556,6 +1798,7 @@ async fn main() -> Result<()> {
                 let agent_state_clone = agent_state.clone();
                 let memory_clone = memory.clone();
                 let tools_clone = tools.clone();
+                let custom_registry_clone = custom_tool_registry.clone();
                 #[cfg(feature = "mcp")]
                 let mcp_manager_clone = mcp_manager.clone();
                 let agent_max_turns = config.agent.max_turns;
@@ -1642,6 +1885,7 @@ async fn main() -> Result<()> {
                             let agent_state = agent_state_clone.clone();
                             let memory = memory_clone.clone();
                             let tools_template = tools_clone.clone();
+                            let custom_registry = custom_registry_clone.clone();
                             #[cfg(feature = "mcp")]
                             let mcp_mgr = mcp_manager_clone.clone();
                             let max_turns = agent_max_turns;
@@ -2626,6 +2870,37 @@ Just type a message to chat with the AI agent.";
                                             *agent_state.write().await = Some(new_agent);
                                             tracing::info!("Agent rebuilt with updated MCP tools");
                                         }
+
+                                        // ── Hot-reload: check if custom tools changed ────
+                                        if custom_registry.take_tools_changed() {
+                                            tracing::info!("Custom tools changed — rebuilding agent");
+                                            let mut new_tools = tools_template.clone();
+                                            let custom_tools = custom_registry.load_tools();
+                                            if !custom_tools.is_empty() {
+                                                tracing::info!(count = custom_tools.len(), "Reloaded custom tools");
+                                                new_tools.extend(custom_tools);
+                                            }
+                                            new_tools.push(std::sync::Arc::new(skyclaw_tools::SelfCreateTool::new(custom_registry.clone())));
+                                            #[cfg(feature = "mcp")]
+                                            {
+                                                let tool_names: Vec<String> = new_tools.iter().map(|t| t.name().to_string()).collect();
+                                                let mcp_tools = mcp_mgr.bridge_tools(&tool_names).await;
+                                                new_tools.extend(mcp_tools);
+                                                new_tools.push(std::sync::Arc::new(skyclaw_mcp::McpManageTool::new(mcp_mgr.clone())));
+                                                new_tools.push(std::sync::Arc::new(skyclaw_mcp::SelfExtendTool::new()));
+                                                new_tools.push(std::sync::Arc::new(skyclaw_mcp::SelfAddMcpTool::new(mcp_mgr.clone())));
+                                            }
+                                            let new_agent = Arc::new(skyclaw_agent::AgentRuntime::with_limits(
+                                                agent.provider_arc(),
+                                                memory.clone(),
+                                                new_tools,
+                                                agent.model().to_string(),
+                                                Some(build_system_prompt()),
+                                                max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
+                                            ).with_v2_optimizations(v2_opt));
+                                            *agent_state.write().await = Some(new_agent);
+                                            tracing::info!("Agent rebuilt with updated custom tools");
+                                        }
                                     } else {
                                         // ── Onboarding / add-key mode: detect API key ────
                                         let msg_text = msg.text.as_deref().unwrap_or("");
@@ -2873,6 +3148,9 @@ Just type a message to chat with the AI agent.";
                 Ok(_) => println!("All tasks drained cleanly."),
                 Err(_) => println!("Drain timeout — forcing exit."),
             }
+
+            // Clean up PID file on graceful shutdown
+            remove_pid_file();
         }
         Commands::Chat => {
             println!("SkyClaw interactive chat");
@@ -2949,6 +3227,19 @@ Just type a message to chat with the AI agent.";
                 Some(Arc::new(setup_tokens.clone()) as Arc<dyn skyclaw_core::SetupLinkGenerator>),
                 Some(usage_store.clone()),
             );
+
+            // ── Custom script tools (user/agent-authored) ──────
+            let custom_tool_registry = Arc::new(skyclaw_tools::CustomToolRegistry::new());
+            {
+                let custom_tools = custom_tool_registry.load_tools();
+                if !custom_tools.is_empty() {
+                    tracing::info!(count = custom_tools.len(), "Custom script tools loaded");
+                    tools_template.extend(custom_tools);
+                }
+                tools_template.push(Arc::new(skyclaw_tools::SelfCreateTool::new(
+                    custom_tool_registry.clone(),
+                )));
+            }
 
             // ── MCP servers (external tool sources) ──────────
             #[cfg(feature = "mcp")]

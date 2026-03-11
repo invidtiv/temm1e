@@ -164,6 +164,18 @@ export TELEGRAM_BOT_TOKEN="your-token-here"
 
 Supports: Anthropic, OpenAI, Gemini, Grok, OpenRouter, Z.ai, MiniMax
 
+### Running as a Daemon
+
+After completing the initial setup above (Steps 1-3), you can run SkyClaw as a background daemon:
+
+```bash
+skyclaw start -d                     # daemonize, log to ~/.skyclaw/skyclaw.log
+skyclaw start -d --log /var/log/sk.log  # custom log path
+skyclaw stop                         # graceful shutdown
+```
+
+> **Important:** `--daemon` requires a completed setup (API key saved via Telegram). First-time users must run `skyclaw start` in the foreground to complete onboarding. If no credentials are found, daemon mode will exit with an error and instructions.
+
 ## Supported Providers
 
 Paste any of these API keys in Telegram — SkyClaw detects the provider automatically:
