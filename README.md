@@ -10,8 +10,8 @@
   <a href="https://github.com/nagisanzenin/skyclaw/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/skyclaw?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.gg/3ux2c5xz"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-2.3.1-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/tests-1307-green.svg" alt="1307 tests">
+  <img src="https://img.shields.io/badge/version-2.4.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/tests-1312-green.svg" alt="1312 tests">
   <img src="https://img.shields.io/badge/providers-8-red.svg" alt="8 providers">
 </p>
 
@@ -20,9 +20,9 @@
 Hyper-performance Rust agent runtime with extreme resilience and continuous self-learning.
 Deploys once, stays up forever. Learns from every task, remembers across sessions, self-heals through failures.
 
-**v2.3: Codex OAuth** — use your ChatGPT Plus/Pro subscription as an AI provider. OAuth PKCE login, Responses API streaming, auto-refresh tokens.
+**v2.4: Interceptor** — real-time task status observation. Agent work becomes an observable TASK with status emission at 10 checkpoints. CancellationToken infrastructure for future mid-stream cancellation.
 
-59K lines | 1,307 tests | zero warnings | zero panic paths | 15 MB idle RAM | 31ms cold start | [Benchmark report](docs/benchmarks/BENCHMARK_REPORT.md)
+59K lines | 1,312 tests | zero warnings | zero panic paths | 15 MB idle RAM | 31ms cold start | [Benchmark report](docs/benchmarks/BENCHMARK_REPORT.md)
 
 ## What It Does
 
@@ -91,8 +91,8 @@ ORDER ─→ THINK ─→ ACTION ─→ VERIFY ─┐
 
 | Metric | Value |
 |--------|-------|
-| **Lines of Rust** | 58,788 across 125 source files |
-| **Tests** | 1,307 passing, 0 failures |
+| **Lines of Rust** | 59,100 across 127 source files |
+| **Tests** | 1,312 passing, 0 failures |
 | **Clippy warnings** | 0 (CI gate: `-D warnings`) |
 | **Workspace crates** | 15 + 1 binary |
 | **Implemented features** | 52 across 10 phases |
@@ -422,7 +422,7 @@ Checks for new commits, pulls the latest code, and rebuilds the release binary i
 ```bash
 $ skyclaw update
 SkyClaw Update
-Current version: 2.3.1
+Current version: 2.4.0
 
 Fetching latest changes...
 3 new commit(s):
@@ -445,7 +445,7 @@ Handles dirty working trees automatically (stash → pull → build → pop). If
 ```bash
 cargo check --workspace                                    # Quick compilation check
 cargo build --workspace                                    # Debug build
-cargo test --workspace                                     # Run all 1307 tests
+cargo test --workspace                                     # Run all 1312 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint (0 warnings)
 cargo fmt --all                                            # Format
 cargo build --release                                      # Release build
@@ -460,6 +460,8 @@ cargo build --release                                      # Release build
 ## Release Timeline
 
 ```
+2026-03-11  v2.4.0  ●━━━ Interceptor Phase 1 — real-time task status observation via watch channel (AgentTaskStatus + AgentTaskPhase), CancellationToken infrastructure alongside AtomicBool interrupt, 10 status emission checkpoints in agent loop, zero behavioral change (all Option — None = zero overhead), 1312 tests
+                    │
 2026-03-11  v2.3.1  ●━━━ Model registry — per-model context window and output token limits for 50+ models, 10% input budget safety margin for token estimation errors, auto-cap for small models (#6), 1307 tests
                     │
 2026-03-11  v2.3.0  ●━━━ Codex OAuth — use ChatGPT Plus/Pro subscription as AI provider via OAuth PKCE, skyclaw-codex-oauth crate (Responses API streaming, item_id/call_id accumulator, strict:false tool format), skyclaw auth login/status/logout commands, headless + browser flows, auto-refresh tokens, gpt-5.4 recommended for full agent functionality, 1297 tests
