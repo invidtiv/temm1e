@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever.</h3>
 
 <p align="center">
-  <code>73K lines</code> · <code>1,535 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>15 MB idle</code> · <code>31ms cold start</code>
+  <code>79K lines</code> · <code>1,638 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>15 MB idle</code> · <code>31ms cold start</code>
 </p>
 
 ---
@@ -239,6 +239,24 @@ Enabled by default in v3.0.0. Disable: `[pack] enabled = false`. Invisible for s
 
 [Research paper →](docs/swarm/RESEARCH_PAPER.md) · [Full experiment report →](docs/swarm/experiment_artifacts/EXPERIMENT_REPORT.md) · [Design doc →](tems_lab/swarm/DESIGN.md)
 
+### Eigen-Tune — Self-Tuning Knowledge Distillation
+
+Every LLM call is a training example being thrown away. Eigen-Tune captures them, scores quality from user behavior, trains a local model, and graduates it through statistical gates — zero added LLM cost, zero user intervention beyond `/eigentune on`.
+
+**Proven on Apple M2 with real fine-tuning:**
+
+| Metric | Result |
+|--------|:------:|
+| Base model (SmolLM2-135M) | 72°F = "150°C" (wrong) |
+| **Fine-tuned on 10 conversations** | **72°F = "21.2°C" (close to 22.2°C)** |
+| Training | 100 iters, 0.509 GB peak, ~28 it/sec |
+| Inference | ~200 tok/sec, 0.303 GB peak |
+| Pipeline cost | **$0 added LLM cost** |
+
+7-stage pipeline: Collect → Score → Curate → Train → Evaluate → Shadow → Monitor. Statistical gates at every transition (SPRT, CUSUM, Wilson score 99% CI). Per-tier graduation: simple first, complex last. Cloud always the fallback.
+
+[Research paper →](tems_lab/eigen/RESEARCH_PAPER.md) · [Design doc →](tems_lab/eigen/DESIGN.md) · [Full lab →](tems_lab/eigen/)
+
 ---
 
 ## Interactive TUI
@@ -329,7 +347,7 @@ Shell, stealth browser (vision click_at), file read/write/list, web fetch, git, 
 
 ## Architecture
 
-17-crate Cargo workspace:
+18-crate Cargo workspace:
 
 ```
 temm1e (binary)
@@ -337,6 +355,7 @@ temm1e (binary)
 ├─ temm1e-core           Shared traits (13), types, config, errors
 ├─ temm1e-agent          TEM'S MIND — 26 modules, λ-Memory, blueprint system, executable DAG
 ├─ temm1e-hive           MANY TEMS — swarm intelligence, pack coordination, scent field
+├─ temm1e-distill        EIGEN-TUNE — self-tuning distillation, statistical gates, zero-cost evaluation
 ├─ temm1e-providers      Anthropic + Gemini (native) + OpenAI-compatible (6 providers)
 ├─ temm1e-codex-oauth    ChatGPT Plus/Pro via OAuth PKCE
 ├─ temm1e-tui            Interactive terminal UI (ratatui + syntect)
@@ -377,7 +396,7 @@ temm1e (binary)
 <td align="center"><strong>15 MB</strong><br><sub>Idle RAM</sub></td>
 <td align="center"><strong>31 ms</strong><br><sub>Cold start</sub></td>
 <td align="center"><strong>9.6 MB</strong><br><sub>Binary size</sub></td>
-<td align="center"><strong>1,509</strong><br><sub>Tests</sub></td>
+<td align="center"><strong>1,638</strong><br><sub>Tests</sub></td>
 <td align="center"><strong>8</strong><br><sub>AI Providers</sub></td>
 <td align="center"><strong>14</strong><br><sub>Built-in tools</sub></td>
 <td align="center"><strong>5</strong><br><sub>Channels</sub></td>
@@ -446,6 +465,7 @@ temm1e reset --confirm       Factory reset with backup
 /usage               Token usage and cost summary
 /mcp                 List connected MCP servers
 /mcp add <name> <cmd>  Connect a new MCP server
+/eigentune           Self-tuning status and control
 ```
 
 ---
@@ -454,7 +474,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 1,458 tests
+cargo test --workspace                                               # 1,638 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -468,6 +488,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-03-18  v3.1.0  ●━━━ Eigen-Tune — self-tuning knowledge distillation engine (temm1e-distill), 7-stage pipeline with SPRT/CUSUM/Wilson statistical gates, zero-cost evaluation, proven on M2 with real LoRA fine-tune, 119 new tests, 1638 total. Research: real fine-tuning proof-of-concept on SmolLM2-135M
+                    │
 2026-03-16  v2.8.1  ●━━━ Model registry update — Gemini 3.1 Flash Lite, Hunter Alpha, GPT-5.4 pricing fix, clippy cleanup, 1458 tests
                     │
 2026-03-15  v2.8.0  ●━━━ λ-Memory — exponential decay memory with hash-based recall, 95% cross-session accuracy, /memory command, 1509 tests. Research: 1,200+ API calls benchmarked across GPT-5.2 & Gemini Flash

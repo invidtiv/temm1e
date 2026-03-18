@@ -232,7 +232,9 @@ mod tests {
     #[test]
     fn parse_yes_response() {
         assert!(Queen::parse_should_decompose("yes"));
-        assert!(Queen::parse_should_decompose("Yes, this can be parallelized."));
+        assert!(Queen::parse_should_decompose(
+            "Yes, this can be parallelized."
+        ));
         assert!(Queen::parse_should_decompose("YES"));
     }
 

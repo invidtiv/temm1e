@@ -4,7 +4,7 @@
 
 TEMM1E is a cloud-native Rust AI agent runtime. It connects to messaging channels (Telegram, Discord, Slack, CLI), routes messages through an agent loop that calls AI providers (Anthropic, OpenAI-compatible), executes tools (shell, browser, file ops), and persists conversation history to memory backends (SQLite, Markdown).
 
-The codebase is a Cargo workspace with 16 crates plus a root binary.
+The codebase is a Cargo workspace with 17 crates plus a root binary.
 
 ## Build commands
 
@@ -64,6 +64,7 @@ crates/
   temm1e-observable  -- OpenTelemetry tracing and metrics
   temm1e-filestore   -- File storage (local, S3)
   temm1e-test-utils  -- Shared test utilities
+  temm1e-distill     -- Eigen-Tune: self-tuning distillation engine
 src/
   main.rs             -- CLI entry point (clap)
 ```

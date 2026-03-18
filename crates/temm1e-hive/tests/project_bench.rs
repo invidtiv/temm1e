@@ -373,7 +373,10 @@ async fn verify_project(project_dir: &Path) -> (bool, bool, u32) {
         Ok(o) => {
             if !o.status.success() {
                 let stderr = String::from_utf8_lossy(&o.stderr);
-                println!("    cargo check FAILED:\n{}", &stderr[..stderr.len().min(2000)]);
+                println!(
+                    "    cargo check FAILED:\n{}",
+                    &stderr[..stderr.len().min(2000)]
+                );
             }
             o.status.success()
         }
@@ -412,7 +415,10 @@ async fn verify_project(project_dir: &Path) -> (bool, bool, u32) {
                 })
                 .unwrap_or(0);
             if !o.status.success() {
-                println!("    cargo test FAILED:\n{}", &stderr[..stderr.len().min(2000)]);
+                println!(
+                    "    cargo test FAILED:\n{}",
+                    &stderr[..stderr.len().min(2000)]
+                );
             }
             (o.status.success(), count)
         }
@@ -437,8 +443,7 @@ fn count_lines(dir: &Path) -> usize {
                     continue;
                 }
                 total += count_lines(&path);
-            } else if path.is_file()
-                && path.extension().map_or(false, |e| e == "rs" || e == "toml")
+            } else if path.is_file() && path.extension().map_or(false, |e| e == "rs" || e == "toml")
             {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     total += content.lines().count();
@@ -469,7 +474,11 @@ async fn run_single_agent(provider: Arc<dyn Provider>) -> ProjectMetrics {
         println!("  [{}/{}] Generating {}...", i + 1, files.len(), spec.path);
         let call_start = Instant::now();
 
-        let ext = if spec.path.ends_with(".toml") { "toml" } else { "rs" };
+        let ext = if spec.path.ends_with(".toml") {
+            "toml"
+        } else {
+            "rs"
+        };
         match tracked_call(&*provider, &tracker, SYSTEM_PROMPT, spec.prompt).await {
             Ok(response) => {
                 let code = extract_code(&response, ext);
@@ -579,11 +588,7 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> ProjectMetrics {
         if tier_files.is_empty() {
             continue;
         }
-        println!(
-            "  {} — {} files in parallel",
-            tier_name,
-            tier_files.len()
-        );
+        println!("  {} — {} files in parallel", tier_name, tier_files.len());
 
         let mut handles = Vec::new();
         for spec in tier_files {
@@ -592,7 +597,11 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> ProjectMetrics {
             let prompt = spec.prompt.to_string();
             let path = spec.path.to_string();
             let dir = dir.clone();
-            let ext = if spec.path.ends_with(".toml") { "toml" } else { "rs" };
+            let ext = if spec.path.ends_with(".toml") {
+                "toml"
+            } else {
+                "rs"
+            };
             let ext = ext.to_string();
 
             handles.push(tokio::spawn(async move {
@@ -715,10 +724,7 @@ async fn project_benchmark() {
     println!("\n╔══════════════════════════════════════════════════╗");
     println!("║              FINAL RESULTS                       ║");
     println!("╠══════════════════════════════════════════════════╣");
-    println!(
-        "║  {:20} {:>12} {:>12}  ║",
-        "", "Single", "Swarm"
-    );
+    println!("║  {:20} {:>12} {:>12}  ║", "", "Single", "Swarm");
     println!("║  ─────────────────── ──────────── ────────────  ║");
     println!(
         "║  {:20} {:>10}ms {:>10}ms  ║",
@@ -739,14 +745,30 @@ async fn project_benchmark() {
     println!(
         "║  {:20} {:>12} {:>12}  ║",
         "cargo check",
-        if single_metrics.cargo_check_pass { "PASS" } else { "FAIL" },
-        if swarm_metrics.cargo_check_pass { "PASS" } else { "FAIL" }
+        if single_metrics.cargo_check_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        if swarm_metrics.cargo_check_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        }
     );
     println!(
         "║  {:20} {:>12} {:>12}  ║",
         "cargo test",
-        if single_metrics.cargo_test_pass { "PASS" } else { "FAIL" },
-        if swarm_metrics.cargo_test_pass { "PASS" } else { "FAIL" }
+        if single_metrics.cargo_test_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        if swarm_metrics.cargo_test_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        }
     );
     println!(
         "║  {:20} {:>12} {:>12}  ║",
@@ -757,8 +779,14 @@ async fn project_benchmark() {
         "Lines generated", single_metrics.total_lines, swarm_metrics.total_lines
     );
     println!("║  ─────────────────── ──────────── ────────────  ║");
-    println!("║  Speedup: {:.2}x                                  ║", speedup);
-    println!("║  Token ratio: {:.2}x                              ║", token_ratio);
+    println!(
+        "║  Speedup: {:.2}x                                  ║",
+        speedup
+    );
+    println!(
+        "║  Token ratio: {:.2}x                              ║",
+        token_ratio
+    );
     println!(
         "║  Total cost: ${:.6}                          ║",
         single_metrics.cost_usd + swarm_metrics.cost_usd
@@ -788,19 +816,42 @@ async fn project_benchmark() {
          - Swarm output: `{}/swarm_agent/taskforge/`\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
         MODEL,
-        single_metrics.wall_clock_ms, swarm_metrics.wall_clock_ms,
+        single_metrics.wall_clock_ms,
+        swarm_metrics.wall_clock_ms,
         speedup,
-        single_metrics.total_tokens, swarm_metrics.total_tokens,
+        single_metrics.total_tokens,
+        swarm_metrics.total_tokens,
         token_ratio,
-        single_metrics.api_calls, swarm_metrics.api_calls,
-        single_metrics.cost_usd, swarm_metrics.cost_usd,
-        if single_metrics.cargo_check_pass { "PASS" } else { "FAIL" },
-        if swarm_metrics.cargo_check_pass { "PASS" } else { "FAIL" },
-        if single_metrics.cargo_test_pass { "PASS" } else { "FAIL" },
-        if swarm_metrics.cargo_test_pass { "PASS" } else { "FAIL" },
-        single_metrics.test_count, swarm_metrics.test_count,
-        single_metrics.total_lines, swarm_metrics.total_lines,
-        ARTIFACT_BASE, ARTIFACT_BASE,
+        single_metrics.api_calls,
+        swarm_metrics.api_calls,
+        single_metrics.cost_usd,
+        swarm_metrics.cost_usd,
+        if single_metrics.cargo_check_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        if swarm_metrics.cargo_check_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        if single_metrics.cargo_test_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        if swarm_metrics.cargo_test_pass {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        single_metrics.test_count,
+        swarm_metrics.test_count,
+        single_metrics.total_lines,
+        swarm_metrics.total_lines,
+        ARTIFACT_BASE,
+        ARTIFACT_BASE,
     );
 
     // Copy artifacts to final location in the repo

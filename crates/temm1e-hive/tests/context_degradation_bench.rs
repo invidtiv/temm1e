@@ -58,8 +58,12 @@ impl Tracker {
             calls: Arc::new(AtomicU32::new(0)),
         }
     }
-    fn tokens(&self) -> u64 { self.tokens.load(Ordering::Relaxed) }
-    fn calls(&self) -> u32 { self.calls.load(Ordering::Relaxed) }
+    fn tokens(&self) -> u64 {
+        self.tokens.load(Ordering::Relaxed)
+    }
+    fn calls(&self) -> u32 {
+        self.calls.load(Ordering::Relaxed)
+    }
     fn cost(&self) -> f64 {
         let t = self.tokens() as f64;
         (t * 0.6 * 0.15 + t * 0.4 * 0.60) / 1_000_000.0
@@ -88,10 +92,14 @@ async fn llm(
     let toks = (resp.usage.input_tokens + resp.usage.output_tokens) as u64;
     tracker.tokens.fetch_add(toks, Ordering::Relaxed);
     tracker.calls.fetch_add(1, Ordering::Relaxed);
-    let text = resp.content.iter().filter_map(|p| match p {
-        ContentPart::Text { text } => Some(text.clone()),
-        _ => None,
-    }).collect();
+    let text = resp
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            ContentPart::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
     Ok((text, toks))
 }
 
@@ -100,7 +108,10 @@ fn extract_python(response: &str) -> String {
     for tag in &["```python", "```py", "```"] {
         if let Some(s) = t.find(tag) {
             let start = s + tag.len();
-            let actual = t[start..].find('\n').map(|n| start + n + 1).unwrap_or(start);
+            let actual = t[start..]
+                .find('\n')
+                .map(|n| start + n + 1)
+                .unwrap_or(start);
             if let Some(end) = t[actual..].find("```") {
                 return t[actual..actual + end].trim().to_string();
             }
@@ -232,9 +243,7 @@ No imports needed (just use builtins). No explanation. Just the function.";
 // ---------------------------------------------------------------------------
 
 async fn test_function(dir: &Path, func_name: &str, code: &str, test_code: &str) -> bool {
-    let test_script = format!(
-        "{code}\n\n# Test\n{test_code}\nprint('PASS: {func_name}')"
-    );
+    let test_script = format!("{code}\n\n# Test\n{test_code}\nprint('PASS: {func_name}')");
     let test_file = dir.join(format!("test_{func_name}.py"));
     std::fs::write(&test_file, &test_script).unwrap();
 
@@ -308,7 +317,12 @@ async fn run_single(provider: Arc<dyn Provider>) -> RunResult {
         let passed = test_function(&dir, func.name, &code, func.test_code).await;
 
         // Accumulate into history (this is what makes later functions harder)
-        history.push_str(&format!("## Function {}: {}\n```python\n{}\n```\n\n", i + 1, func.name, code));
+        history.push_str(&format!(
+            "## Function {}: {}\n```python\n{}\n```\n\n",
+            i + 1,
+            func.name,
+            code
+        ));
 
         let ctx_size = history.len();
         println!(
@@ -334,7 +348,11 @@ async fn run_single(provider: Arc<dyn Provider>) -> RunResult {
 
     let elapsed = start.elapsed();
     let passed = results.iter().filter(|r| r.passed).count();
-    println!("\n  Result: {passed}/12 passed, {}ms, {} tokens\n", elapsed.as_millis(), tracker.tokens());
+    println!(
+        "\n  Result: {passed}/12 passed, {}ms, {} tokens\n",
+        elapsed.as_millis(),
+        tracker.tokens()
+    );
 
     RunResult {
         mode: "single".into(),
@@ -399,9 +417,11 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> RunResult {
 
             println!(
                 "  [{:>2}/12] {:<22} {}  {}ms  {}tok  ctx={}",
-                i + 1, name,
+                i + 1,
+                name,
                 if passed { "PASS" } else { "FAIL" },
-                latency, toks,
+                latency,
+                toks,
                 spec.len(), // context is just the spec
             );
 
@@ -425,7 +445,11 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> RunResult {
 
     let elapsed = start.elapsed();
     let passed = results.iter().filter(|r| r.passed).count();
-    println!("\n  Result: {passed}/12 passed, {}ms, {} tokens\n", elapsed.as_millis(), tracker.tokens());
+    println!(
+        "\n  Result: {passed}/12 passed, {}ms, {} tokens\n",
+        elapsed.as_millis(),
+        tracker.tokens()
+    );
 
     RunResult {
         mode: "swarm".into(),
@@ -486,7 +510,10 @@ async fn context_degradation_benchmark() {
 
     match llm(&*provider, &Tracker::new(), "say ok", "say ok").await {
         Ok(_) => println!("\nAPI OK.\n"),
-        Err(e) => { println!("API FAILED: {e}"); return; }
+        Err(e) => {
+            println!("API FAILED: {e}");
+            return;
+        }
     }
 
     let single = run_single(provider.clone()).await;
@@ -499,20 +526,44 @@ async fn context_degradation_benchmark() {
     println!("╠══════════════════════════════════════════════════════════╣");
     println!("║  {:26} {:>10} {:>10}   ║", "", "Single", "Swarm");
     println!("║  ──────────────────────────── ────────── ──────────   ║");
-    println!("║  {:26} {:>8}/12 {:>8}/12   ║", "Functions passing tests", single.passed, swarm.passed);
-    println!("║  {:26} {:>8}ms {:>8}ms   ║", "Wall clock", single.wall_ms, swarm.wall_ms);
-    println!("║  {:26} {:>10} {:>10}   ║", "Total tokens", single.tokens, swarm.tokens);
-    println!("║  {:26} {:>10} {:>10}   ║", "API calls", single.calls, swarm.calls);
-    println!("║  {:26} {:>9.6} {:>9.6}   ║", "Cost (USD)", single.cost, swarm.cost);
+    println!(
+        "║  {:26} {:>8}/12 {:>8}/12   ║",
+        "Functions passing tests", single.passed, swarm.passed
+    );
+    println!(
+        "║  {:26} {:>8}ms {:>8}ms   ║",
+        "Wall clock", single.wall_ms, swarm.wall_ms
+    );
+    println!(
+        "║  {:26} {:>10} {:>10}   ║",
+        "Total tokens", single.tokens, swarm.tokens
+    );
+    println!(
+        "║  {:26} {:>10} {:>10}   ║",
+        "API calls", single.calls, swarm.calls
+    );
+    println!(
+        "║  {:26} {:>9.6} {:>9.6}   ║",
+        "Cost (USD)", single.cost, swarm.cost
+    );
     println!("║  ──────────────────────────── ────────── ──────────   ║");
-    println!("║  Speedup: {:.2}x                                          ║", speedup);
-    println!("║  Quality: {} vs {}                                     ║",
-        format!("{}/12", single.passed), format!("{}/12", swarm.passed));
+    println!(
+        "║  Speedup: {:.2}x                                          ║",
+        speedup
+    );
+    println!(
+        "║  Quality: {} vs {}                                     ║",
+        format!("{}/12", single.passed),
+        format!("{}/12", swarm.passed)
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     // Per-function comparison
     println!("\n  Per-function breakdown:");
-    println!("  {:<24} {:>8} {:>8}  {:>8} {:>8}", "Function", "Single", "ctx(b)", "Swarm", "ctx(b)");
+    println!(
+        "  {:<24} {:>8} {:>8}  {:>8} {:>8}",
+        "Function", "Single", "ctx(b)", "Swarm", "ctx(b)"
+    );
     println!("  {}", "-".repeat(64));
 
     // Sort swarm results by name to align
@@ -526,7 +577,8 @@ async fn context_degradation_benchmark() {
             sr.name,
             if sr.passed { "PASS" } else { "FAIL" },
             sr.context_size,
-            sw.map(|r| if r.passed { "PASS" } else { "FAIL" }).unwrap_or("?"),
+            sw.map(|r| if r.passed { "PASS" } else { "FAIL" })
+                .unwrap_or("?"),
             sw.map(|r| r.context_size).unwrap_or(0),
         );
     }
@@ -549,11 +601,17 @@ async fn context_degradation_benchmark() {
          | Speedup | — | {:.2}x |\n\
          | Tokens | {} | {} |\n\
          | Cost | ${:.6} | ${:.6} |\n",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), MODEL,
-        single.passed, swarm.passed,
-        single.wall_ms, swarm.wall_ms, speedup,
-        single.tokens, swarm.tokens,
-        single.cost, swarm.cost,
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+        MODEL,
+        single.passed,
+        swarm.passed,
+        single.wall_ms,
+        swarm.wall_ms,
+        speedup,
+        single.tokens,
+        swarm.tokens,
+        single.cost,
+        swarm.cost,
     );
     std::fs::write(art.join("CONTEXT_DEGRADATION_REPORT.md"), &report).unwrap();
 

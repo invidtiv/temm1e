@@ -77,6 +77,59 @@ The savings come from compound multi-step tasks where fewer API rounds mean less
 
 ---
 
+## Eigen-Tune (Self-Tuning)
+
+**An AI agent that fine-tunes itself. Zero added LLM cost.**
+
+Every LLM call is a training example. Eigen-Tune captures them, scores quality from user behavior, curates datasets, trains local models, and graduates them through statistically rigorous gates — all with zero user intervention beyond `/eigentune on` and zero added LLM cost.
+
+The bet: open-source models will only get better. Our job is to have the best domain-specific training data ready when they do. **The data is the moat. The model is a commodity.**
+
+### Architecture
+
+A 7-stage closed-loop pipeline with per-tier state machines governed by statistical tests. **Default: $0 added LLM cost.** Optional Teacher Mode for users who want to pay for stronger guarantees.
+
+| Stage | Method | Cost |
+|-------|--------|------|
+| Collect | Fire-and-forget hook on every provider call | $0 |
+| Score | Beta-Binomial model from user behavior signals | $0 |
+| Curate | Shannon entropy + Thompson sampling | $0 |
+| Train | QLoRA via Unsloth/MLX → GGUF → Ollama | $0 (local compute) |
+| Evaluate | Embedding similarity (local) + Wilson score (99% CI) | $0 |
+| Shadow | User behavior → SPRT (Wald, 1945) | $0 |
+| Monitor | User behavior → CUSUM (Page, 1954) | $0 |
+| *Teacher (opt-in)* | *LLM-as-judge with position debiasing* | *LLM API cost* |
+
+Each complexity tier (Simple, Standard, Complex) graduates independently. Simple first, complex last. Cloud is always the fallback. The user IS the judge — their behavior (continue, retry, reject) drives graduation decisions.
+
+### Benchmarked: Real fine-tuning on Apple M2, 16GB RAM
+
+| Metric | Result |
+|--------|--------|
+| Data collected | 10 conversations, 3 tiers, 8 domains |
+| Training loss | 2.450 → 1.242 (49% reduction) |
+| Peak memory | 0.509 GB training, 0.303 GB inference |
+| Speed | ~28 it/sec training, ~200 tok/sec inference |
+| Base model 72°F | "150°C" (wrong) |
+| **Fine-tuned 72°F** | **"21.2°C" (close to 22.2°C)** |
+| Statistical tests | 128 tests, all passing |
+
+The base model made a fundamental arithmetic error. Ten training examples fixed it. This is knowledge distillation working at consumer scale. [Research paper →](eigen/RESEARCH_PAPER.md) · [Full pipeline log →](eigen/PIPELINE_PROOF_LOG.txt)
+
+### Documents
+
+| | |
+|---|---|
+| [Research Paper](eigen/RESEARCH_PAPER.md) | Full paper: architecture, math, real M2 results, economics, limitations |
+| [Design Doc](eigen/DESIGN.md) | Formal state machine, mathematical formulas (SPRT, CUSUM, Wilson, Beta-Binomial, Shannon entropy), zero-cost evaluation architecture, data model, risk assessment |
+| [Implementation Plan](eigen/IMPLEMENTATION.md) | Phase-by-phase build guide — every struct, function, file, and test |
+| [Technical Reference](eigen/TECHNICAL_REFERENCE.md) | Ollama API endpoints, training scripts (Unsloth + MLX), embedding judge, two-tier behavior detection, ChatML format, codebase hook locations |
+| [Pipeline Proof Log](eigen/PIPELINE_PROOF_LOG.txt) | Unedited output: data → training → inference on Apple M2, 2026-03-18 |
+
+**Status:** Implemented and proven. Branch: `self-tuning`. 128 tests, real fine-tuning on M2.
+
+---
+
 ## Research Philosophy
 
 Every system in Tem's Lab follows the same process:

@@ -274,7 +274,9 @@ mod tests {
         let json = serde_json::to_string(&part).unwrap();
         let restored: ContentPart = serde_json::from_str(&json).unwrap();
         match restored {
-            ContentPart::ToolUse { id, name, input, .. } => {
+            ContentPart::ToolUse {
+                id, name, input, ..
+            } => {
                 assert_eq!(id, "tu-1");
                 assert_eq!(name, "shell");
                 assert_eq!(input["command"], "ls");

@@ -237,7 +237,9 @@ pub async fn classify_message(
         });
         classify_messages.push(ChatMessage {
             role: Role::Assistant,
-            content: MessageContent::Text("Understood. I will classify only the next message.".to_string()),
+            content: MessageContent::Text(
+                "Understood. I will classify only the next message.".to_string(),
+            ),
         });
     }
 

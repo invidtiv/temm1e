@@ -222,7 +222,9 @@ fn convert_message_to_anthropic(msg: &ChatMessage) -> Result<serde_json::Value, 
                         "type": "text",
                         "text": text,
                     }),
-                    ContentPart::ToolUse { id, name, input, .. } => serde_json::json!({
+                    ContentPart::ToolUse {
+                        id, name, input, ..
+                    } => serde_json::json!({
                         "type": "tool_use",
                         "id": id,
                         "name": name,
@@ -554,7 +556,12 @@ fn extract_sse_event(
                     };
                     return Some(Ok(StreamChunk {
                         delta: None,
-                        tool_use: Some(ContentPart::ToolUse { id, name, input, thought_signature: None }),
+                        tool_use: Some(ContentPart::ToolUse {
+                            id,
+                            name,
+                            input,
+                            thought_signature: None,
+                        }),
                         stop_reason: None,
                     }));
                 }

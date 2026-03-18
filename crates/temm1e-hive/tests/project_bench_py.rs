@@ -55,8 +55,12 @@ impl Tracker {
             calls: Arc::new(AtomicU32::new(0)),
         }
     }
-    fn tokens(&self) -> u64 { self.tokens.load(Ordering::Relaxed) }
-    fn calls(&self) -> u32 { self.calls.load(Ordering::Relaxed) }
+    fn tokens(&self) -> u64 {
+        self.tokens.load(Ordering::Relaxed)
+    }
+    fn calls(&self) -> u32 {
+        self.calls.load(Ordering::Relaxed)
+    }
     fn cost(&self) -> f64 {
         let t = self.tokens() as f64;
         // Gemini 3.1 Pro pricing estimate
@@ -86,10 +90,14 @@ async fn llm(
     let toks = (resp.usage.input_tokens + resp.usage.output_tokens) as u64;
     tracker.tokens.fetch_add(toks, Ordering::Relaxed);
     tracker.calls.fetch_add(1, Ordering::Relaxed);
-    Ok(resp.content.iter().filter_map(|p| match p {
-        ContentPart::Text { text } => Some(text.clone()),
-        _ => None,
-    }).collect())
+    Ok(resp
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            ContentPart::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect())
 }
 
 fn extract_python(response: &str) -> String {
@@ -97,7 +105,10 @@ fn extract_python(response: &str) -> String {
     for tag in &["```python", "```py", "```"] {
         if let Some(s) = t.find(tag) {
             let start = s + tag.len();
-            let actual = t[start..].find('\n').map(|n| start + n + 1).unwrap_or(start);
+            let actual = t[start..]
+                .find('\n')
+                .map(|n| start + n + 1)
+                .unwrap_or(start);
             if let Some(end) = t[actual..].find("```") {
                 return t[actual..actual + end].trim().to_string();
             }
@@ -295,9 +306,7 @@ async fn generate_with_fix(
         if syntax_ok {
             // Also try import check if it's a module (not test)
             if file_path.starts_with("taskboard/") && file_path != "taskboard/__init__.py" {
-                let module = file_path
-                    .replace('/', ".")
-                    .replace(".py", "");
+                let module = file_path.replace('/', ".").replace(".py", "");
                 let (import_ok, import_err) = check_import(project_dir, &module).await;
                 if import_ok {
                     return (code, attempt, true);
@@ -360,20 +369,26 @@ async fn run_pytest(project_dir: &Path) -> (bool, u32, String) {
             let combined = format!("{stdout}\n{stderr}");
 
             // Count passed tests
-            let passed = combined
-                .lines()
-                .filter(|l| l.contains("PASSED"))
-                .count() as u32;
+            let passed = combined.lines().filter(|l| l.contains("PASSED")).count() as u32;
 
-            let failed = combined
-                .lines()
-                .filter(|l| l.contains("FAILED"))
-                .count() as u32;
+            let failed = combined.lines().filter(|l| l.contains("FAILED")).count() as u32;
 
-            (o.status.success(), passed, format!(
-                "{passed} passed, {failed} failed\n{}",
-                combined.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
-            ))
+            (
+                o.status.success(),
+                passed,
+                format!(
+                    "{passed} passed, {failed} failed\n{}",
+                    combined
+                        .lines()
+                        .rev()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            )
         }
         Err(e) => (false, 0, format!("pytest error: {e}")),
     }
@@ -405,10 +420,13 @@ async fn run_single(provider: Arc<dyn Provider>) -> Metrics {
         let (code, attempts, ok) =
             generate_with_fix(&*provider, &tracker, &dir, spec.path, spec.spec, &deps).await;
         total_attempts += attempts;
-        if ok { files_clean += 1; }
+        if ok {
+            files_clean += 1;
+        }
         println!(
             "    → {} lines, {} attempt{}, {}",
-            code.lines().count(), attempts,
+            code.lines().count(),
+            attempts,
             if attempts > 1 { "s" } else { "" },
             if ok { "CLEAN" } else { "has errors" }
         );
@@ -416,7 +434,12 @@ async fn run_single(provider: Arc<dyn Provider>) -> Metrics {
     }
 
     let elapsed = start.elapsed();
-    println!("  Generation: {}ms, {} calls, {} attempts\n", elapsed.as_millis(), tracker.calls(), total_attempts);
+    println!(
+        "  Generation: {}ms, {} calls, {} attempts\n",
+        elapsed.as_millis(),
+        tracker.calls(),
+        total_attempts
+    );
 
     println!("  Running pytest...");
     let (test_pass, test_count, test_output) = run_pytest(&dir).await;
@@ -457,19 +480,36 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> Metrics {
 
     // Tier assignment
     let is_test = |i: usize| files[i].path.starts_with("tests/");
-    let tier0: Vec<usize> = files.iter().enumerate()
+    let tier0: Vec<usize> = files
+        .iter()
+        .enumerate()
         .filter(|(i, f)| f.deps.is_empty() && !is_test(*i))
-        .map(|(i, _)| i).collect();
-    let tier1: Vec<usize> = files.iter().enumerate()
-        .filter(|(i, f)| !is_test(*i) && !f.deps.is_empty()
-            && f.deps.iter().all(|d| tier0.iter().any(|&ti| files[ti].path == *d)))
-        .map(|(i, _)| i).collect();
-    let tier2: Vec<usize> = files.iter().enumerate()
+        .map(|(i, _)| i)
+        .collect();
+    let tier1: Vec<usize> = files
+        .iter()
+        .enumerate()
+        .filter(|(i, f)| {
+            !is_test(*i)
+                && !f.deps.is_empty()
+                && f.deps
+                    .iter()
+                    .all(|d| tier0.iter().any(|&ti| files[ti].path == *d))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let tier2: Vec<usize> = files
+        .iter()
+        .enumerate()
         .filter(|(i, _)| !is_test(*i) && !tier0.contains(i) && !tier1.contains(i))
-        .map(|(i, _)| i).collect();
-    let tier3: Vec<usize> = files.iter().enumerate()
+        .map(|(i, _)| i)
+        .collect();
+    let tier3: Vec<usize> = files
+        .iter()
+        .enumerate()
         .filter(|(i, _)| is_test(*i))
-        .map(|(i, _)| i).collect();
+        .map(|(i, _)| i)
+        .collect();
 
     let tiers = vec![
         ("Tier 0 (independent)", tier0),
@@ -479,8 +519,15 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> Metrics {
     ];
 
     for (name, indices) in &tiers {
-        if indices.is_empty() { continue; }
-        println!("  {} — {} file{}", name, indices.len(), if indices.len() > 1 { "s parallel" } else { "" });
+        if indices.is_empty() {
+            continue;
+        }
+        println!(
+            "  {} — {} file{}",
+            name,
+            indices.len(),
+            if indices.len() > 1 { "s parallel" } else { "" }
+        );
 
         let mut handles = Vec::new();
         for &idx in indices {
@@ -499,23 +546,34 @@ async fn run_swarm(provider: Arc<dyn Provider>) -> Metrics {
                 let (code, attempts, ok) =
                     generate_with_fix(&*p, &t, &d, &path, &spec, &deps).await;
                 ta.fetch_add(attempts as u32, Ordering::Relaxed);
-                if ok { fc.fetch_add(1, Ordering::Relaxed); }
+                if ok {
+                    fc.fetch_add(1, Ordering::Relaxed);
+                }
                 println!(
                     "    {} → {} lines, {} attempt{}, {}",
-                    path, code.lines().count(), attempts,
+                    path,
+                    code.lines().count(),
+                    attempts,
                     if attempts > 1 { "s" } else { "" },
                     if ok { "CLEAN" } else { "has errors" }
                 );
             }));
         }
-        for h in handles { let _ = h.await; }
+        for h in handles {
+            let _ = h.await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
     let elapsed = start.elapsed();
     let ta = total_attempts.load(Ordering::Relaxed);
     let fc = files_clean.load(Ordering::Relaxed);
-    println!("  Generation: {}ms, {} calls, {} attempts\n", elapsed.as_millis(), tracker.calls(), ta);
+    println!(
+        "  Generation: {}ms, {} calls, {} attempts\n",
+        elapsed.as_millis(),
+        tracker.calls(),
+        ta
+    );
 
     println!("  Running pytest...");
     let (test_pass, test_count, test_output) = run_pytest(&dir).await;
@@ -540,10 +598,15 @@ fn count_py_lines(dir: &Path) -> usize {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "__pycache__" || name.starts_with('.') { continue; }
-        if p.is_dir() { total += count_py_lines(&p); }
-        else if p.extension().map_or(false, |e| e == "py") {
-            total += std::fs::read_to_string(&p).map(|c| c.lines().count()).unwrap_or(0);
+        if name == "__pycache__" || name.starts_with('.') {
+            continue;
+        }
+        if p.is_dir() {
+            total += count_py_lines(&p);
+        } else if p.extension().map_or(false, |e| e == "py") {
+            total += std::fs::read_to_string(&p)
+                .map(|c| c.lines().count())
+                .unwrap_or(0);
         }
     }
     total
@@ -587,7 +650,10 @@ async fn python_project_benchmark() {
 
     match llm(&*provider, &Tracker::new(), "say ok", "say ok").await {
         Ok(_) => println!("\nAPI OK.\n"),
-        Err(e) => { println!("API FAILED: {e}"); return; }
+        Err(e) => {
+            println!("API FAILED: {e}");
+            return;
+        }
     }
 
     let single = run_single(provider.clone()).await;
@@ -601,19 +667,59 @@ async fn python_project_benchmark() {
     println!("╠═══════════════════════════════════════════════════════╣");
     println!("║  {:24} {:>10} {:>10}   ║", "", "Single", "Swarm");
     println!("║  ──────────────────────── ────────── ──────────   ║");
-    println!("║  {:24} {:>8}ms {:>8}ms   ║", "Wall clock", single.wall_ms, swarm.wall_ms);
-    println!("║  {:24} {:>10} {:>10}   ║", "Total tokens", single.tokens, swarm.tokens);
-    println!("║  {:24} {:>10} {:>10}   ║", "API calls (inc retries)", single.api_calls, swarm.api_calls);
-    println!("║  {:24} {:>10} {:>10}   ║", "Total attempts", single.total_attempts, swarm.total_attempts);
-    println!("║  {:24} {:>10} {:>10}   ║", "Files clean (1st try)", format!("{}/7", single.files_clean), format!("{}/7", swarm.files_clean));
-    println!("║  {:24} {:>9.6} {:>9.6}   ║", "Cost (USD)", single.cost, swarm.cost);
-    println!("║  {:24} {:>10} {:>10}   ║", "pytest", if single.test_pass { "PASS" } else { "FAIL" }, if swarm.test_pass { "PASS" } else { "FAIL" });
-    println!("║  {:24} {:>10} {:>10}   ║", "Tests passed", single.test_count, swarm.test_count);
-    println!("║  {:24} {:>10} {:>10}   ║", "Lines generated", single.lines, swarm.lines);
+    println!(
+        "║  {:24} {:>8}ms {:>8}ms   ║",
+        "Wall clock", single.wall_ms, swarm.wall_ms
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "Total tokens", single.tokens, swarm.tokens
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "API calls (inc retries)", single.api_calls, swarm.api_calls
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "Total attempts", single.total_attempts, swarm.total_attempts
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "Files clean (1st try)",
+        format!("{}/7", single.files_clean),
+        format!("{}/7", swarm.files_clean)
+    );
+    println!(
+        "║  {:24} {:>9.6} {:>9.6}   ║",
+        "Cost (USD)", single.cost, swarm.cost
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "pytest",
+        if single.test_pass { "PASS" } else { "FAIL" },
+        if swarm.test_pass { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "Tests passed", single.test_count, swarm.test_count
+    );
+    println!(
+        "║  {:24} {:>10} {:>10}   ║",
+        "Lines generated", single.lines, swarm.lines
+    );
     println!("║  ──────────────────────── ────────── ──────────   ║");
-    println!("║  Speedup: {:.2}x                                       ║", speedup);
-    println!("║  Token ratio: {:.2}x                                   ║", token_ratio);
-    println!("║  Total cost: ${:.6}                               ║", single.cost + swarm.cost);
+    println!(
+        "║  Speedup: {:.2}x                                       ║",
+        speedup
+    );
+    println!(
+        "║  Token ratio: {:.2}x                                   ║",
+        token_ratio
+    );
+    println!(
+        "║  Total cost: ${:.6}                               ║",
+        single.cost + swarm.cost
+    );
     println!("╚═══════════════════════════════════════════════════════╝");
 
     // Save
@@ -629,12 +735,24 @@ async fn python_project_benchmark() {
             let s = e.path();
             let d = dst.join(e.file_name());
             let name = s.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "__pycache__" || name.starts_with('.') { continue; }
-            if s.is_dir() { cp(&s, &d); } else { let _ = std::fs::copy(&s, &d); }
+            if name == "__pycache__" || name.starts_with('.') {
+                continue;
+            }
+            if s.is_dir() {
+                cp(&s, &d);
+            } else {
+                let _ = std::fs::copy(&s, &d);
+            }
         }
     }
-    cp(&PathBuf::from(BUILD_DIR).join("single"), &art.join("single_agent_py"));
-    cp(&PathBuf::from(BUILD_DIR).join("swarm"), &art.join("swarm_agent_py"));
+    cp(
+        &PathBuf::from(BUILD_DIR).join("single"),
+        &art.join("single_agent_py"),
+    );
+    cp(
+        &PathBuf::from(BUILD_DIR).join("swarm"),
+        &art.join("swarm_agent_py"),
+    );
 
     let report = format!(
         "# Python Project Benchmark (Difficulty 8/10)\n\n\
@@ -656,17 +774,27 @@ async fn python_project_benchmark() {
          | pytest | {} | {} |\n\
          | Tests passed | {} | {} |\n\
          | Lines | {} | {} |\n",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), MODEL,
-        single.wall_ms, swarm.wall_ms, speedup,
-        single.tokens, swarm.tokens,
-        single.api_calls, swarm.api_calls,
-        single.total_attempts, swarm.total_attempts,
-        single.files_clean, swarm.files_clean,
-        single.cost, swarm.cost,
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+        MODEL,
+        single.wall_ms,
+        swarm.wall_ms,
+        speedup,
+        single.tokens,
+        swarm.tokens,
+        single.api_calls,
+        swarm.api_calls,
+        single.total_attempts,
+        swarm.total_attempts,
+        single.files_clean,
+        swarm.files_clean,
+        single.cost,
+        swarm.cost,
         if single.test_pass { "PASS" } else { "FAIL" },
         if swarm.test_pass { "PASS" } else { "FAIL" },
-        single.test_count, swarm.test_count,
-        single.lines, swarm.lines,
+        single.test_count,
+        swarm.test_count,
+        single.lines,
+        swarm.lines,
     );
     std::fs::write(art.join("BENCHMARK_PYTHON_REPORT.md"), &report).unwrap();
     println!("\nArtifacts saved.");

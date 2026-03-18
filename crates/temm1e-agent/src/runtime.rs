@@ -585,11 +585,13 @@ impl AgentRuntime {
                     let complexity = router.classify_complexity(&session.history, &[], &user_text);
 
                     // If hive enabled and fallback says Complex → route to swarm
-                    if self.hive_enabled && matches!(complexity, crate::model_router::TaskComplexity::Complex) {
-                        info!("V2: Fallback classified as Complex + hive enabled → routing to swarm");
-                        return Err(Temm1eError::HiveRoute(
-                            msg.text.clone().unwrap_or_default(),
-                        ));
+                    if self.hive_enabled
+                        && matches!(complexity, crate::model_router::TaskComplexity::Complex)
+                    {
+                        info!(
+                            "V2: Fallback classified as Complex + hive enabled → routing to swarm"
+                        );
+                        return Err(Temm1eError::HiveRoute(msg.text.clone().unwrap_or_default()));
                     }
 
                     let profile = complexity.execution_profile();
@@ -922,7 +924,9 @@ impl AgentRuntime {
                     ContentPart::Text { text } => {
                         text_parts.push(text.clone());
                     }
-                    ContentPart::ToolUse { id, name, input, .. } => {
+                    ContentPart::ToolUse {
+                        id, name, input, ..
+                    } => {
                         tool_uses.push((id.clone(), name.clone(), input.clone()));
                     }
                     ContentPart::ToolResult { .. } | ContentPart::Image { .. } => {

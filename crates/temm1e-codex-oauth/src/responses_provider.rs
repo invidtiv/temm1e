@@ -161,7 +161,9 @@ impl CodexResponsesProvider {
                                 "content": text,
                             }));
                         }
-                        ContentPart::ToolUse { id, name, input, .. } => {
+                        ContentPart::ToolUse {
+                            id, name, input, ..
+                        } => {
                             // Assistant requested a tool call → function_call item
                             // Skip if name is empty (malformed history entry)
                             if !name.is_empty() {

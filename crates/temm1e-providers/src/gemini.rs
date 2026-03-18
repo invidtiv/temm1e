@@ -324,7 +324,7 @@ impl GeminiProvider {
                         function_call: None,
                         function_response: None,
                         inline_data: None,
-                    thought_signature: None,
+                        thought_signature: None,
                     }),
                     ContentPart::ToolUse {
                         name,
@@ -378,7 +378,11 @@ impl GeminiProvider {
                         }
                         if let Some(ref fc) = part.function_call {
                             // Strip default_api: prefix that Gemini 3 adds to tool names
-                            let name = fc.name.strip_prefix("default_api:").unwrap_or(&fc.name).to_string();
+                            let name = fc
+                                .name
+                                .strip_prefix("default_api:")
+                                .unwrap_or(&fc.name)
+                                .to_string();
                             content_parts.push(ContentPart::ToolUse {
                                 id: format!("gemini-{}", uuid::Uuid::new_v4()),
                                 name,
@@ -491,10 +495,7 @@ impl Provider for GeminiProvider {
     }
 
     async fn health_check(&self) -> Result<bool, Temm1eError> {
-        let url = format!(
-            "{}/models?key={}",
-            self.base_url, self.api_key
-        );
+        let url = format!("{}/models?key={}", self.base_url, self.api_key);
 
         let response = self
             .client
@@ -507,10 +508,7 @@ impl Provider for GeminiProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, Temm1eError> {
-        let url = format!(
-            "{}/models?key={}",
-            self.base_url, self.api_key
-        );
+        let url = format!("{}/models?key={}", self.base_url, self.api_key);
 
         let response = self
             .client

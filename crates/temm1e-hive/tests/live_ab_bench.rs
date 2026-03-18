@@ -29,9 +29,7 @@ fn make_provider() -> Result<Arc<dyn Provider>, Temm1eError> {
         api_key: Some(key),
         keys: vec![],
         model: Some("gemini-3.1-flash-lite-preview".into()),
-        base_url: Some(
-            "https://generativelanguage.googleapis.com/v1beta/openai".into(),
-        ),
+        base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()),
         extra_headers: std::collections::HashMap::new(),
     };
 
@@ -82,8 +80,7 @@ async fn single_call(
 
 /// Cost in USD for Gemini 3.1 Flash Lite.
 fn cost_usd(input_tokens: u32, output_tokens: u32) -> f64 {
-    (input_tokens as f64 * 0.075 / 1_000_000.0)
-        + (output_tokens as f64 * 0.30 / 1_000_000.0)
+    (input_tokens as f64 * 0.075 / 1_000_000.0) + (output_tokens as f64 * 0.30 / 1_000_000.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +332,10 @@ async fn live_ab_benchmark() {
 
             // Check budget
             if total_cost > budget_limit {
-                println!("  BUDGET LIMIT REACHED (${:.4}/${:.0})", total_cost, budget_limit);
+                println!(
+                    "  BUDGET LIMIT REACHED (${:.4}/${:.0})",
+                    total_cost, budget_limit
+                );
                 break;
             }
 
@@ -441,7 +441,11 @@ async fn live_ab_benchmark() {
             avg_swarm_ms,
             token_ratio,
             speedup,
-            if swarm_active { "ACTIVATED" } else { "not activated" },
+            if swarm_active {
+                "ACTIVATED"
+            } else {
+                "not activated"
+            },
         );
     }
 
@@ -541,7 +545,10 @@ async fn execution_time_benchmark() {
     );
 
     // ── Swarm: process all subtasks in parallel ──
-    println!("--- Swarm (parallel execution, {} workers) ---", subtasks.len());
+    println!(
+        "--- Swarm (parallel execution, {} workers) ---",
+        subtasks.len()
+    );
     let swarm_start = Instant::now();
 
     let config = temm1e_hive::HiveConfig {
@@ -628,8 +635,16 @@ async fn execution_time_benchmark() {
     println!("     EXECUTION TIME RESULTS");
     println!("========================================");
     println!("  Subtasks:       {}", subtasks.len());
-    println!("  Single agent:   {}ms  ({} tokens)", single_elapsed.as_millis(), single_tokens);
-    println!("  Swarm parallel: {}ms  ({} tokens)", swarm_elapsed.as_millis(), swarm_total);
+    println!(
+        "  Single agent:   {}ms  ({} tokens)",
+        single_elapsed.as_millis(),
+        single_tokens
+    );
+    println!(
+        "  Swarm parallel: {}ms  ({} tokens)",
+        swarm_elapsed.as_millis(),
+        swarm_total
+    );
     println!("  Wall-clock speedup: {:.2}x", speedup);
     println!("  Token ratio:        {:.2}x", token_ratio);
     println!("  Total cost:         ${:.6}", total_cost);

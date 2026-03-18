@@ -5051,6 +5051,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "temm1e-distill"
+version = "3.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "temm1e-core",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "temm1e-filestore"
 version = "3.0.0"
 dependencies = [

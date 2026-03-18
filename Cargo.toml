@@ -19,6 +19,7 @@ members = [
     "crates/temm1e-codex-oauth",
     "crates/temm1e-tui",
     "crates/temm1e-hive",
+    "crates/temm1e-distill",
 ]
 
 [workspace.package]
@@ -120,6 +121,7 @@ temm1e-mcp = { path = "crates/temm1e-mcp" }
 temm1e-codex-oauth = { path = "crates/temm1e-codex-oauth" }
 temm1e-tui = { path = "crates/temm1e-tui" }
 temm1e-hive = { path = "crates/temm1e-hive" }
+temm1e-distill = { path = "crates/temm1e-distill" }
 
 [package]
 name = "temm1e"

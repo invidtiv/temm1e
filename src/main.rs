@@ -1424,13 +1424,23 @@ async fn main() -> Result<()> {
             // Quick check: is [hive] enabled in config? (just the boolean, full init later)
             let hive_enabled_early = {
                 #[derive(serde::Deserialize, Default)]
-                struct HiveCheck { #[serde(default)] hive: HiveEnabled }
+                struct HiveCheck {
+                    #[serde(default)]
+                    hive: HiveEnabled,
+                }
                 #[derive(serde::Deserialize, Default)]
-                struct HiveEnabled { #[serde(default)] enabled: bool }
+                struct HiveEnabled {
+                    #[serde(default)]
+                    enabled: bool,
+                }
 
                 config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
-                    .or_else(|| dirs::home_dir().and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()))
+                    .or_else(|| {
+                        dirs::home_dir().and_then(|h| {
+                            std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()
+                        })
+                    })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                     .and_then(|content| toml::from_str::<HiveCheck>(&content).ok())
                     .map(|c| c.hive.enabled)
@@ -3648,12 +3658,22 @@ Just type a message to chat with the AI agent.",
             // Check hive config for CLI chat path
             let hive_enabled_early = {
                 #[derive(serde::Deserialize, Default)]
-                struct HC { #[serde(default)] hive: HE }
+                struct HC {
+                    #[serde(default)]
+                    hive: HE,
+                }
                 #[derive(serde::Deserialize, Default)]
-                struct HE { #[serde(default)] enabled: bool }
+                struct HE {
+                    #[serde(default)]
+                    enabled: bool,
+                }
                 config_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
-                    .or_else(|| dirs::home_dir().and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()))
+                    .or_else(|| {
+                        dirs::home_dir().and_then(|h| {
+                            std::fs::read_to_string(h.join(".temm1e/config.toml")).ok()
+                        })
+                    })
                     .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
                     .and_then(|c| toml::from_str::<HC>(&c).ok())
                     .map(|c| c.hive.enabled)
@@ -4525,18 +4545,42 @@ Just type a message to chat with the AI agent.",
                             // Re-process as a normal message without hive.
                             if let Some(ref mut agent) = agent_opt {
                                 let non_hive = temm1e_agent::AgentRuntime::with_limits(
-                                    agent.provider_arc(), agent.memory_arc(), agent.tools().to_vec(),
-                                    agent.model().to_string(), None,
-                                    max_turns, max_ctx, max_rounds, max_task_duration, max_spend,
-                                ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt);
+                                    agent.provider_arc(),
+                                    agent.memory_arc(),
+                                    agent.tools().to_vec(),
+                                    agent.model().to_string(),
+                                    None,
+                                    max_turns,
+                                    max_ctx,
+                                    max_rounds,
+                                    max_task_duration,
+                                    max_spend,
+                                )
+                                .with_v2_optimizations(v2_opt)
+                                .with_parallel_phases(pp_opt);
                                 let re_msg = temm1e_core::types::message::InboundMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
-                                    channel: "cli".into(), chat_id: "cli".into(),
-                                    user_id: "local".into(), username: None,
-                                    text: Some(hive_msg), attachments: vec![],
-                                    reply_to: None, timestamp: chrono::Utc::now(),
+                                    channel: "cli".into(),
+                                    chat_id: "cli".into(),
+                                    user_id: "local".into(),
+                                    username: None,
+                                    text: Some(hive_msg),
+                                    attachments: vec![],
+                                    reply_to: None,
+                                    timestamp: chrono::Utc::now(),
                                 };
-                                match non_hive.process_message(&re_msg, &mut session, None, None, None, None, None).await {
+                                match non_hive
+                                    .process_message(
+                                        &re_msg,
+                                        &mut session,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                    )
+                                    .await
+                                {
                                     Ok((reply, _usage)) => {
                                         if !reply.text.trim().is_empty() {
                                             println!("\n{}\n", reply.text);

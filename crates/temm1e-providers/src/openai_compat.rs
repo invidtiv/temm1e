@@ -427,7 +427,9 @@ fn convert_message_to_openai(
                         ContentPart::Text { text } => {
                             text_content = Some(text.clone());
                         }
-                        ContentPart::ToolUse { id, name, input, .. } => {
+                        ContentPart::ToolUse {
+                            id, name, input, ..
+                        } => {
                             tool_calls.push(serde_json::json!({
                                 "id": id,
                                 "type": "function",
@@ -948,7 +950,12 @@ fn flush_tool_calls(
 
     Some(Ok(StreamChunk {
         delta: None,
-        tool_use: Some(ContentPart::ToolUse { id, name, input, thought_signature: None }),
+        tool_use: Some(ContentPart::ToolUse {
+            id,
+            name,
+            input,
+            thought_signature: None,
+        }),
         stop_reason: None,
     }))
 }
