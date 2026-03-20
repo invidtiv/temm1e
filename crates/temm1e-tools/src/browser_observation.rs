@@ -30,6 +30,10 @@ pub struct TreeMetadata {
     pub has_form: bool,
     /// Whether the tree contains an img role (potentially semantic images).
     pub has_images_with_semantic_meaning: bool,
+    /// Whether the page has a QR code detected via heuristic JS scan.
+    /// When true, observation should escalate to Tier 3 (screenshot) so the
+    /// user can see and scan the QR code.
+    pub has_qr_code: bool,
 }
 
 /// Parse a formatted accessibility tree text and extract metadata counters.
@@ -63,8 +67,8 @@ pub fn analyze_tree(tree_text: &str) -> TreeMetadata {
 ///
 /// # Decision logic
 ///
-/// - **Tier 3** (screenshot): previous action failed, or hint mentions
-///   visual/captcha/image/layout concerns.
+/// - **Tier 3** (screenshot): previous action failed, QR code detected on
+///   the page, or hint mentions visual/captcha/image/layout concerns.
 /// - **Tier 2** (tree + DOM Markdown): page has tables, forms, or >33%
 ///   unlabeled interactive elements that benefit from DOM detail.
 /// - **Tier 1** (tree only): default when the accessibility tree is
@@ -76,6 +80,10 @@ pub fn select_tier(
 ) -> ObservationTier {
     // Tier 3: Visual verification needed
     if previous_action_failed {
+        return ObservationTier::TreeWithScreenshot { selector: None };
+    }
+    // QR code detected — must escalate to screenshot so user can scan it
+    if meta.has_qr_code {
         return ObservationTier::TreeWithScreenshot { selector: None };
     }
     if let Some(hint) = action_hint {
@@ -208,6 +216,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(tier, ObservationTier::Tree);
@@ -221,6 +230,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(tier, ObservationTier::Tree);
@@ -234,6 +244,7 @@ mod tests {
             has_table: true,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(
@@ -252,6 +263,7 @@ mod tests {
             has_table: false,
             has_form: true,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(
@@ -270,6 +282,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(
@@ -288,6 +301,7 @@ mod tests {
             has_table: true,
             has_form: true,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(
@@ -349,6 +363,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, true);
         assert_eq!(tier, ObservationTier::TreeWithScreenshot { selector: None });
@@ -362,6 +377,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, Some("click the submit button"), false);
         assert_eq!(tier, ObservationTier::Tree);
@@ -383,6 +399,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier = select_tier(&meta, None, false);
         assert_eq!(tier, ObservationTier::Tree);
@@ -394,6 +411,7 @@ mod tests {
             has_table: false,
             has_form: false,
             has_images_with_semantic_meaning: false,
+            has_qr_code: false,
         };
         let tier2 = select_tier(&meta2, None, false);
         assert_eq!(
@@ -442,5 +460,87 @@ mod tests {
     #[test]
     fn truncate_safe_zero_limit() {
         assert_eq!(truncate_safe("hello", 0), "");
+    }
+
+    // ── QR code detection tier escalation tests ─────────────────────
+
+    #[test]
+    fn tier3_on_qr_code_detected() {
+        let meta = TreeMetadata {
+            total_interactive: 3,
+            unlabeled_interactive: 0,
+            has_table: false,
+            has_form: false,
+            has_images_with_semantic_meaning: false,
+            has_qr_code: true,
+        };
+        let tier = select_tier(&meta, None, false);
+        assert_eq!(tier, ObservationTier::TreeWithScreenshot { selector: None });
+    }
+
+    #[test]
+    fn tier3_qr_overrides_form() {
+        // Even with a form, QR detection should escalate to Tier 3
+        let meta = TreeMetadata {
+            total_interactive: 5,
+            unlabeled_interactive: 0,
+            has_table: false,
+            has_form: true,
+            has_images_with_semantic_meaning: false,
+            has_qr_code: true,
+        };
+        let tier = select_tier(&meta, None, false);
+        assert_eq!(tier, ObservationTier::TreeWithScreenshot { selector: None });
+    }
+
+    #[test]
+    fn tier3_qr_overrides_table() {
+        // Even with a table, QR detection should escalate to Tier 3
+        let meta = TreeMetadata {
+            total_interactive: 2,
+            unlabeled_interactive: 0,
+            has_table: true,
+            has_form: false,
+            has_images_with_semantic_meaning: false,
+            has_qr_code: true,
+        };
+        let tier = select_tier(&meta, None, false);
+        assert_eq!(tier, ObservationTier::TreeWithScreenshot { selector: None });
+    }
+
+    #[test]
+    fn no_qr_does_not_escalate() {
+        // Explicitly false should not affect tier selection
+        let meta = TreeMetadata {
+            total_interactive: 3,
+            unlabeled_interactive: 0,
+            has_table: false,
+            has_form: false,
+            has_images_with_semantic_meaning: false,
+            has_qr_code: false,
+        };
+        let tier = select_tier(&meta, None, false);
+        assert_eq!(tier, ObservationTier::Tree);
+    }
+
+    #[test]
+    fn qr_default_is_false() {
+        let meta = TreeMetadata::default();
+        assert!(!meta.has_qr_code);
+    }
+
+    #[test]
+    fn tier3_failure_takes_priority_over_qr() {
+        // Both failure and QR are true — both lead to Tier 3, failure checked first
+        let meta = TreeMetadata {
+            total_interactive: 3,
+            unlabeled_interactive: 0,
+            has_table: false,
+            has_form: false,
+            has_images_with_semantic_meaning: false,
+            has_qr_code: true,
+        };
+        let tier = select_tier(&meta, None, true);
+        assert_eq!(tier, ObservationTier::TreeWithScreenshot { selector: None });
     }
 }

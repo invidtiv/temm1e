@@ -42,8 +42,9 @@ use temm1e_core::{
 use tokio::sync::Mutex;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-/// Default idle timeout (seconds). Overridden by `ToolsConfig.browser_timeout_secs`.
-const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 300;
+/// Default idle timeout (seconds). 0 = disabled (persistent browser).
+/// Overridden by `ToolsConfig.browser_timeout_secs`.
+const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 0;
 
 /// Directory under `~/.temm1e/` where browser session cookies are stored.
 const SESSIONS_DIR: &str = "sessions";
@@ -124,6 +125,45 @@ if (window.chrome) {
 })();
 "#;
 
+/// JavaScript to detect QR codes on a page via heuristic checks.
+///
+/// Returns one of: `"qr_canvas"`, `"qr_image"`, `"qr_possible"`, `"no_qr"`.
+///
+/// Detection strategies:
+/// 1. Canvas elements with square dimensions (QR codes are often rendered in canvas)
+/// 2. Images with "qr" in src/alt/class attributes
+/// 3. Square images of QR-like size (150px+) that are prominent on the page
+pub(crate) const QR_DETECT_JS: &str = r#"
+(() => {
+    // 1. Canvas elements with square dimensions (QR codes are often rendered in canvas)
+    const canvases = document.querySelectorAll('canvas');
+    for (const c of canvases) {
+        const ratio = c.width / c.height;
+        if (ratio > 0.9 && ratio < 1.1 && c.width >= 100 && c.width <= 500) {
+            return 'qr_canvas';
+        }
+    }
+    // 2. Images with "qr" in src/alt/class
+    const imgs = document.querySelectorAll('img');
+    for (const img of imgs) {
+        const src = (img.src || '').toLowerCase();
+        const alt = (img.alt || '').toLowerCase();
+        const cls = (img.className || '').toLowerCase();
+        if (src.includes('qr') || alt.includes('qr') || cls.includes('qr')) {
+            return 'qr_image';
+        }
+        // 3. Square images of QR-like size
+        const rect = img.getBoundingClientRect();
+        const ratio = rect.width / rect.height;
+        if (ratio > 0.9 && ratio < 1.1 && rect.width >= 100 && rect.width <= 400) {
+            // Could be a QR code — check if it's prominent on the page
+            if (rect.width >= 150) return 'qr_possible';
+        }
+    }
+    return 'no_qr';
+})()
+"#;
+
 /// Serializable cookie for session persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionCookie {
@@ -167,11 +207,15 @@ pub struct BrowserTool {
     /// If the tree hasn't changed since last observation, we return a short message
     /// instead of repeating the full tree.
     last_tree_hash: Arc<std::sync::Mutex<Option<u64>>>,
-    /// Optional vault for credential retrieval.
+    /// Optional vault for credential retrieval and session auto-capture.
     vault: Option<Arc<dyn Vault>>,
     /// PID of the Chrome main process — used to kill child processes on shutdown.
     /// Set to 0 when no browser is running.
     chrome_pid: Arc<AtomicU32>,
+    /// Instant when the browser was last started — for uptime tracking.
+    browser_started_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// Domains visited during this browser session — for `/browser` status.
+    active_domains: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Default for BrowserTool {
@@ -181,12 +225,13 @@ impl Default for BrowserTool {
 }
 
 impl BrowserTool {
-    /// Create a new browser tool with default timeout (300s).
+    /// Create a new browser tool with default timeout (0 = persistent, no idle timeout).
     pub fn new() -> Self {
         Self::with_timeout(DEFAULT_IDLE_TIMEOUT_SECS as u64)
     }
 
     /// Create a new browser tool with a custom idle timeout (in seconds).
+    /// If `timeout_secs` is 0, the idle watchdog is disabled (persistent browser).
     pub fn with_timeout(timeout_secs: u64) -> Self {
         let browser = Arc::new(Mutex::new(None));
         let page = Arc::new(Mutex::new(None));
@@ -198,6 +243,8 @@ impl BrowserTool {
         let chrome_pid = Arc::new(AtomicU32::new(0));
 
         // Spawn idle auto-close watchdog — store handle for cleanup on drop.
+        // When idle_timeout == 0, the watchdog still runs but never triggers
+        // the auto-close check (persistent browser mode).
         let watchdog_handle = {
             let browser = browser.clone();
             let page = page.clone();
@@ -210,6 +257,10 @@ impl BrowserTool {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     if shutdown.load(Ordering::Relaxed) {
                         break;
+                    }
+                    // idle_timeout == 0 means persistent browser — skip auto-close
+                    if idle_timeout == 0 {
+                        continue;
                     }
                     let lu = last_used.load(Ordering::Relaxed);
                     if lu == 0 {
@@ -251,13 +302,290 @@ impl BrowserTool {
             last_tree_hash: Arc::new(std::sync::Mutex::new(None)),
             vault: None,
             chrome_pid,
+            browser_started_at: Arc::new(std::sync::Mutex::new(None)),
+            active_domains: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 
-    /// Attach a vault for credential retrieval.
+    /// Attach a vault for credential retrieval and session auto-capture.
     pub fn with_vault(mut self, vault: Arc<dyn Vault>) -> Self {
         self.vault = Some(vault);
         self
+    }
+
+    // ── Public API for /browser command ──────────────────────────────
+
+    /// Check if the browser is currently running.
+    pub fn is_running(&self) -> bool {
+        self.browser
+            .try_lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Get the browser uptime as a human-readable string, or `None` if not running.
+    pub fn uptime(&self) -> Option<String> {
+        let started = self.browser_started_at.lock().ok()?.as_ref().copied()?;
+        let elapsed = started.elapsed();
+        let secs = elapsed.as_secs();
+        if secs < 60 {
+            Some(format!("{}s", secs))
+        } else if secs < 3600 {
+            Some(format!("{}m {}s", secs / 60, secs % 60))
+        } else {
+            let h = secs / 3600;
+            let m = (secs % 3600) / 60;
+            Some(format!("{}h {}m", h, m))
+        }
+    }
+
+    /// Get the set of domains visited during this browser session.
+    pub fn get_active_domains(&self) -> std::collections::HashSet<String> {
+        self.active_domains
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Auto-capture all active sessions to vault before browser close.
+    ///
+    /// For each domain visited, captures cookies via CDP `Network.getCookies`
+    /// and stores them in the vault under `web_session:{domain}`.
+    /// Errors are logged but do not prevent the close.
+    async fn auto_capture_sessions_to_vault(&self) -> Vec<String> {
+        let mut saved = Vec::new();
+        let vault = match self.vault.as_ref() {
+            Some(v) => v,
+            None => return saved,
+        };
+
+        let page_guard = self.page.lock().await;
+        let page = match page_guard.as_ref() {
+            Some(p) => p,
+            None => return saved,
+        };
+
+        // Get current URL for the capture metadata
+        let current_url = page.url().await.ok().flatten().unwrap_or_default();
+
+        // Get all cookies from the browser
+        let cookies_response = match page.execute(GetCookiesParams::default()).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "Auto-capture: failed to get cookies");
+                return saved;
+            }
+        };
+
+        // Group cookies by base domain
+        let mut domain_cookies: HashMap<
+            String,
+            Vec<&chromiumoxide::cdp::browser_protocol::network::Cookie>,
+        > = HashMap::new();
+        for cookie in &cookies_response.result.cookies {
+            let domain = cookie.domain.trim_start_matches('.').to_string();
+            // Extract the base domain (e.g., "facebook.com" -> "facebook")
+            let base = domain
+                .split('.')
+                .rev()
+                .nth(1)
+                .unwrap_or(&domain)
+                .to_string();
+            domain_cookies.entry(base).or_default().push(cookie);
+        }
+
+        // Save each domain's cookies to vault
+        for (domain, cookies) in &domain_cookies {
+            let cookie_values: Vec<serde_json::Value> = cookies
+                .iter()
+                .filter_map(|c| serde_json::to_value(c).ok())
+                .collect();
+
+            let state = serde_json::json!({
+                "cookies": cookie_values,
+                "local_storage": [],
+                "session_storage": [],
+                "url": current_url,
+                "captured_at": chrono::Utc::now().to_rfc3339(),
+                "service": domain,
+            });
+
+            let json = match serde_json::to_vec(&state) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::warn!(domain = %domain, error = %e, "Auto-capture: serialize failed");
+                    continue;
+                }
+            };
+
+            let vault_key = format!("web_session:{}", domain);
+            match vault.store_secret(&vault_key, &json).await {
+                Ok(()) => {
+                    tracing::info!(
+                        domain = %domain,
+                        cookies = cookies.len(),
+                        "Session for {} auto-saved to vault",
+                        domain
+                    );
+                    saved.push(domain.clone());
+                }
+                Err(e) => {
+                    tracing::warn!(domain = %domain, error = %e, "Auto-capture: vault store failed");
+                }
+            }
+        }
+
+        saved
+    }
+
+    /// Auto-restore all saved sessions from vault when browser starts.
+    ///
+    /// Looks up all `web_session:*` keys in vault and restores their cookies
+    /// via CDP `Network.setCookies`.
+    async fn auto_restore_sessions_from_vault(&self, page: &Page) {
+        let vault = match self.vault.as_ref() {
+            Some(v) => v,
+            None => return,
+        };
+
+        let keys = match vault.list_keys().await {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::debug!(error = %e, "Auto-restore: failed to list vault keys");
+                return;
+            }
+        };
+
+        let session_keys: Vec<&String> = keys
+            .iter()
+            .filter(|k| k.starts_with("web_session:"))
+            .collect();
+
+        if session_keys.is_empty() {
+            return;
+        }
+
+        let mut restored_count = 0u32;
+        for key in &session_keys {
+            let raw_bytes = match vault.get_secret(key).await {
+                Ok(Some(b)) => b,
+                _ => continue,
+            };
+
+            // Parse the session state — handle both full SessionState and legacy formats
+            let cookies: Vec<serde_json::Value> =
+                if let Ok(state) = serde_json::from_slice::<serde_json::Value>(&raw_bytes) {
+                    state
+                        .get("cookies")
+                        .and_then(|c| c.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    continue;
+                };
+
+            if cookies.is_empty() {
+                continue;
+            }
+
+            let cookie_params: Vec<CookieParam> = cookies
+                .iter()
+                .filter_map(|cv| {
+                    let name = cv.get("name")?.as_str()?;
+                    let value = cv.get("value")?.as_str()?;
+                    let mut param = CookieParam::new(name.to_string(), value.to_string());
+                    if let Some(domain) = cv.get("domain").and_then(|v| v.as_str()) {
+                        param.domain = Some(domain.to_string());
+                    }
+                    if let Some(path) = cv.get("path").and_then(|v| v.as_str()) {
+                        param.path = Some(path.to_string());
+                    }
+                    if let Some(expires) = cv.get("expires").and_then(|v| v.as_f64()) {
+                        param.expires = Some(TimeSinceEpoch::new(expires));
+                    }
+                    if let Some(http_only) = cv.get("httpOnly").and_then(|v| v.as_bool()) {
+                        param.http_only = Some(http_only);
+                    }
+                    if let Some(secure) = cv.get("secure").and_then(|v| v.as_bool()) {
+                        param.secure = Some(secure);
+                    }
+                    if let Some(ss) = cv.get("sameSite").and_then(|v| v.as_str()) {
+                        if let Ok(parsed) = ss.parse::<CookieSameSite>() {
+                            param.same_site = Some(parsed);
+                        }
+                    }
+                    Some(param)
+                })
+                .collect();
+
+            if !cookie_params.is_empty() {
+                match page.execute(SetCookiesParams::new(cookie_params)).await {
+                    Ok(_) => restored_count += 1,
+                    Err(e) => {
+                        tracing::debug!(key = %key, error = %e, "Auto-restore: set cookies failed");
+                    }
+                }
+            }
+        }
+
+        if restored_count > 0 {
+            tracing::info!(
+                count = restored_count,
+                "Restored {} saved sessions from vault",
+                restored_count
+            );
+        }
+    }
+
+    /// Get the list of saved web sessions from vault (for `/browser sessions`).
+    ///
+    /// Returns a list of `(service_name, captured_at)` pairs.
+    pub async fn list_saved_sessions(&self) -> Vec<(String, String)> {
+        let vault = match self.vault.as_ref() {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+
+        let keys = match vault.list_keys().await {
+            Ok(k) => k,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut sessions = Vec::new();
+        for key in keys {
+            if let Some(service) = key.strip_prefix("web_session:") {
+                let captured_at = match vault.get_secret(&key).await {
+                    Ok(Some(raw)) => serde_json::from_slice::<serde_json::Value>(&raw)
+                        .ok()
+                        .and_then(|v| v.get("captured_at")?.as_str().map(String::from))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    _ => "unknown".to_string(),
+                };
+                sessions.push((service.to_string(), captured_at));
+            }
+        }
+        sessions
+    }
+
+    /// Delete a saved session from vault (for `/browser forget <service>`).
+    pub async fn forget_session(&self, service: &str) -> Result<(), String> {
+        let vault = match self.vault.as_ref() {
+            Some(v) => v,
+            None => return Err("Vault not available".to_string()),
+        };
+
+        let vault_key = format!("web_session:{}", service);
+        vault
+            .delete_secret(&vault_key)
+            .await
+            .map_err(|e| format!("Failed to delete session: {}", e))
+    }
+
+    /// Close the browser with auto-capture. Returns (message, saved_domains).
+    pub async fn close_with_capture(&self) -> (String, Vec<String>) {
+        let saved = self.auto_capture_sessions_to_vault().await;
+        let msg = self.close_browser().await;
+        (msg, saved)
     }
 
     /// Signal the watchdog to stop and abort background task handles.
@@ -282,6 +610,13 @@ impl BrowserTool {
                 handle.abort();
             }
             self.last_used.store(0, Ordering::Relaxed);
+            // Clear browser lifecycle tracking
+            if let Ok(mut started) = self.browser_started_at.lock() {
+                *started = None;
+            }
+            if let Ok(mut domains) = self.active_domains.lock() {
+                domains.clear();
+            }
             // Kill any orphaned Chrome child processes (renderer, GPU, utility).
             if pid > 0 {
                 kill_chrome_children(pid);
@@ -293,12 +628,17 @@ impl BrowserTool {
         }
     }
 
-    /// Graceful async shutdown — closes the browser and kills all Chrome processes.
+    /// Graceful async shutdown — auto-captures sessions, closes browser, kills Chrome.
     ///
     /// Prefer this over relying on `Drop` during application shutdown, since `Drop`
     /// cannot run async code and must use best-effort synchronous cleanup.
     pub async fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        // Best-effort auto-capture before closing
+        let saved = self.auto_capture_sessions_to_vault().await;
+        if !saved.is_empty() {
+            tracing::info!(domains = ?saved, "Auto-captured sessions on shutdown");
+        }
         self.close_browser().await;
     }
 
@@ -339,13 +679,11 @@ impl BrowserTool {
         // DEV/TEST ONLY: use a clean profile with no cookies when TEMM1E_CLEAN_BROWSER=1
         // Production users keep their session persistence via the default Chrome profile
         if std::env::var("TEMM1E_CLEAN_BROWSER").unwrap_or_default() == "1" {
-            let temp_profile = std::env::temp_dir()
-                .join(format!("temm1e-chrome-clean-{}", std::process::id()));
+            let temp_profile =
+                std::env::temp_dir().join(format!("temm1e-chrome-clean-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&temp_profile); // ensure truly fresh
             let _ = std::fs::create_dir_all(&temp_profile);
-            builder = builder
-                .user_data_dir(&temp_profile)
-                .arg("--incognito");
+            builder = builder.user_data_dir(&temp_profile).arg("--incognito");
             tracing::info!(
                 profile = %temp_profile.display(),
                 "Browser using clean profile (TEMM1E_CLEAN_BROWSER=1)"
@@ -418,10 +756,24 @@ impl BrowserTool {
         // Wait for page to be ready
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
+        // ── Auto-restore saved sessions from vault ──────────────────
+        // Must happen before storing page reference (we need the page ref but
+        // auto_restore_sessions_from_vault takes &Page directly).
+        self.auto_restore_sessions_from_vault(&page).await;
+
         *browser_guard = Some(browser);
         *page_guard = Some(page.clone());
         self.last_used
             .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+
+        // Track browser start time for uptime reporting
+        if let Ok(mut started) = self.browser_started_at.lock() {
+            *started = Some(std::time::Instant::now());
+        }
+        // Clear active domains for the new session
+        if let Ok(mut domains) = self.active_domains.lock() {
+            domains.clear();
+        }
 
         tracing::info!(
             timeout_secs = self.idle_timeout_secs,
@@ -586,6 +938,26 @@ fn sessions_dir() -> Result<std::path::PathBuf, Temm1eError> {
     dirs::home_dir()
         .map(|h| h.join(".temm1e").join(SESSIONS_DIR))
         .ok_or_else(|| Temm1eError::Tool("Cannot determine home directory".into()))
+}
+
+/// Extract the base domain from a URL (e.g., "https://www.facebook.com/login" -> "facebook").
+fn extract_base_domain(url: &str) -> Option<String> {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = without_scheme.split('/').next()?;
+    // Strip port if present (e.g., "localhost:8080" -> "localhost")
+    let host_no_port = host.split(':').next().unwrap_or(host);
+    let clean = host_no_port.strip_prefix("www.").unwrap_or(host_no_port);
+    // Get the base name (second-to-last dot-separated segment for TLDs, or first for simple domains)
+    let parts: Vec<&str> = clean.split('.').collect();
+    if parts.len() >= 2 {
+        Some(parts[parts.len() - 2].to_string())
+    } else if !parts[0].is_empty() {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
 }
 
 /// Sanitize a session name to a safe filename (alphanumeric, dots, dashes, underscores).
@@ -786,6 +1158,62 @@ fn format_ax_tree(nodes: &[chromiumoxide::cdp::browser_protocol::accessibility::
         "(no interactive or semantic elements found)".to_string()
     } else {
         output
+    }
+}
+
+// ── QR code detection ────────────────────────────────────────────
+
+/// Run heuristic QR code detection on a page via JavaScript.
+///
+/// Returns `true` if a QR code (or likely QR code) is detected on the page.
+/// Uses canvas dimensions, image attributes, and image sizes as signals.
+async fn detect_qr_on_page(page: &Page) -> bool {
+    match page.evaluate(QR_DETECT_JS).await {
+        Ok(result) => {
+            let detection = result
+                .into_value::<String>()
+                .unwrap_or_else(|_| "no_qr".to_string());
+            let found = detection != "no_qr";
+            if found {
+                tracing::info!(detection = %detection, "QR code detected on page");
+            }
+            found
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "QR detection JS failed — assuming no QR");
+            false
+        }
+    }
+}
+
+/// Take a screenshot and store it in `last_image` for vision pipeline forwarding.
+///
+/// Used by QR auto-detection to send the screenshot to the user without them
+/// explicitly requesting one.
+async fn auto_screenshot_for_qr(
+    page: &Page,
+    last_image: &std::sync::Mutex<Option<ToolOutputImage>>,
+) {
+    use chromiumoxide::page::ScreenshotParams;
+
+    match page.screenshot(ScreenshotParams::builder().build()).await {
+        Ok(png_data) => {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png_data);
+            if let Ok(mut img) = last_image.lock() {
+                *img = Some(ToolOutputImage {
+                    media_type: "image/png".to_string(),
+                    data: b64,
+                });
+            }
+            tracing::debug!(
+                screenshot_bytes = png_data.len(),
+                "Auto-screenshot captured for QR code forwarding"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to auto-screenshot for QR detection");
+        }
     }
 }
 
@@ -998,6 +1426,18 @@ impl Drop for BrowserTool {
     fn drop(&mut self) {
         self.signal_shutdown();
 
+        // NOTE: Session auto-capture cannot happen in Drop because it requires async.
+        // Callers should use shutdown() or close_with_capture() before dropping.
+        // If the browser is still running at this point, sessions may not be saved.
+        if let Ok(guard) = self.browser.try_lock() {
+            if guard.is_some() {
+                tracing::warn!(
+                    "BrowserTool dropped with active browser — sessions may not be saved. \
+                     Use shutdown() or close_with_capture() for graceful cleanup."
+                );
+            }
+        }
+
         // Best-effort synchronous cleanup: take the browser and CDP handle out of
         // their mutexes so their Drop impls fire immediately. This triggers
         // chromiumoxide's kill_on_drop on the main Chrome process.
@@ -1016,6 +1456,14 @@ impl Drop for BrowserTool {
             if let Some(handle) = guard.take() {
                 handle.abort();
             }
+        }
+
+        // Clear browser lifecycle tracking (best-effort)
+        if let Ok(mut started) = self.browser_started_at.lock() {
+            *started = None;
+        }
+        if let Ok(mut domains) = self.active_domains.lock() {
+            domains.clear();
         }
 
         // Kill orphaned Chrome child processes (renderer, GPU, utility).
@@ -1150,11 +1598,17 @@ impl Tool for BrowserTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| Temm1eError::Tool("Missing required parameter: action".into()))?;
 
-        // Handle close before launching browser
+        // Handle close before launching browser — auto-capture sessions first
         if action == "close" {
+            let saved = self.auto_capture_sessions_to_vault().await;
             let msg = self.close_browser().await;
+            let content = if saved.is_empty() {
+                msg
+            } else {
+                format!("Sessions saved: {}. {}", saved.join(", "), msg)
+            };
             return Ok(ToolOutput {
-                content: msg,
+                content,
                 is_error: false,
             });
         }
@@ -1172,6 +1626,13 @@ impl Tool for BrowserTool {
                     .ok_or_else(|| {
                         Temm1eError::Tool("'navigate' requires 'url' parameter".into())
                     })?;
+
+                // Track the domain for /browser status
+                if let Some(domain) = extract_base_domain(url) {
+                    if let Ok(mut domains) = self.active_domains.lock() {
+                        domains.insert(domain);
+                    }
+                }
 
                 tracing::info!(url = %url, "Browser navigating (stealth)");
                 // 60s timeout for heavy sites like Facebook
@@ -1211,8 +1672,25 @@ impl Tool for BrowserTool {
                     .map(|u| u.to_string())
                     .unwrap_or_default();
 
+                // ── QR code auto-detection ──────────────────────────────
+                // After navigation, check if the page has a QR code (common
+                // on login pages for Zalo, WhatsApp Web, Telegram Web, WeChat).
+                // If found, auto-screenshot so the vision pipeline sends it
+                // to the user without them needing to ask.
+                let qr_detected = detect_qr_on_page(&page).await;
+                let mut content =
+                    format!("Navigated to: {}\nTitle: {}", current_url, title);
+                if qr_detected {
+                    auto_screenshot_for_qr(&page, &self.last_image).await;
+                    content.push_str(
+                        "\n\n\u{1F4F1} QR code detected on this page. \
+                         A screenshot has been captured automatically. \
+                         The user should scan the QR code to log in.",
+                    );
+                }
+
                 Ok(ToolOutput {
-                    content: format!("Navigated to: {}\nTitle: {}", current_url, title),
+                    content,
                     is_error: false,
                 })
             }
@@ -1762,7 +2240,13 @@ impl Tool for BrowserTool {
                 }
 
                 // Analyze and select tier
-                let meta = browser_observation::analyze_tree(&tree_text);
+                let mut meta = browser_observation::analyze_tree(&tree_text);
+
+                // Run QR code detection — if found, escalate to Tier 3
+                // so the user can see and scan the QR code
+                let qr_detected = detect_qr_on_page(&page).await;
+                meta.has_qr_code = qr_detected;
+
                 let tier = browser_observation::select_tier(&meta, hint, retry);
 
                 tracing::debug!(
@@ -1771,6 +2255,7 @@ impl Tool for BrowserTool {
                     unlabeled = meta.unlabeled_interactive,
                     has_table = meta.has_table,
                     has_form = meta.has_form,
+                    has_qr_code = meta.has_qr_code,
                     "Observe: tier selected"
                 );
 
@@ -1851,11 +2336,18 @@ impl Tool for BrowserTool {
                             }
                         }
 
+                        let qr_note = if qr_detected {
+                            "\n\n\u{1F4F1} QR code detected on this page. \
+                             The user should scan the QR code image above to log in."
+                        } else {
+                            ""
+                        };
+
                         Ok(ToolOutput {
                             content: format!(
                                 "{}\n\n[Screenshot captured for visual analysis — \
-                                 Tier 3 observation]",
-                                tree_text
+                                 Tier 3 observation]{}",
+                                tree_text, qr_note
                             ),
                             is_error: false,
                         })
@@ -2083,8 +2575,8 @@ mod tests {
     // ── Default idle timeout ─────────────────────────────────────────
 
     #[test]
-    fn default_idle_timeout_is_300_seconds() {
-        assert_eq!(DEFAULT_IDLE_TIMEOUT_SECS, 300);
+    fn default_idle_timeout_is_zero_persistent() {
+        assert_eq!(DEFAULT_IDLE_TIMEOUT_SECS, 0);
     }
 
     // ── Session cookie serialization ─────────────────────────────────
@@ -2271,7 +2763,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let tool = BrowserTool::new();
-            assert_eq!(tool.idle_timeout_secs, 300);
+            assert_eq!(tool.idle_timeout_secs, 0);
         });
     }
 
@@ -2653,7 +3145,7 @@ mod tests {
         rt.block_on(async {
             // BrowserTool::default() should delegate to new()
             let tool = BrowserTool::default();
-            assert_eq!(tool.idle_timeout_secs, 300);
+            assert_eq!(tool.idle_timeout_secs, 0);
         });
     }
 
@@ -3003,5 +3495,227 @@ mod tests {
                 }
             });
         }
+    }
+
+    // ── QR detection JS constant tests ──────────────────────────────
+
+    #[test]
+    fn qr_detect_js_not_empty() {
+        assert!(
+            !QR_DETECT_JS.is_empty(),
+            "QR detection JS should not be empty"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_is_iife() {
+        assert!(
+            QR_DETECT_JS.contains("(() =>"),
+            "QR detect JS should be an IIFE"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_checks_canvas() {
+        assert!(
+            QR_DETECT_JS.contains("canvas"),
+            "QR detect JS should check canvas elements"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_checks_images() {
+        assert!(
+            QR_DETECT_JS.contains("querySelectorAll('img')"),
+            "QR detect JS should check img elements"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_returns_qr_canvas() {
+        assert!(
+            QR_DETECT_JS.contains("'qr_canvas'"),
+            "QR detect JS should return 'qr_canvas' for canvas-based QR"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_returns_qr_image() {
+        assert!(
+            QR_DETECT_JS.contains("'qr_image'"),
+            "QR detect JS should return 'qr_image' for img-based QR"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_returns_qr_possible() {
+        assert!(
+            QR_DETECT_JS.contains("'qr_possible'"),
+            "QR detect JS should return 'qr_possible' for heuristic match"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_returns_no_qr() {
+        assert!(
+            QR_DETECT_JS.contains("'no_qr'"),
+            "QR detect JS should return 'no_qr' when no QR found"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_checks_src_alt_class() {
+        assert!(
+            QR_DETECT_JS.contains(".src") && QR_DETECT_JS.contains(".alt"),
+            "QR detect JS should check img.src and img.alt for 'qr'"
+        );
+        assert!(
+            QR_DETECT_JS.contains(".className"),
+            "QR detect JS should check img.className for 'qr'"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_checks_square_ratio() {
+        assert!(
+            QR_DETECT_JS.contains("0.9") && QR_DETECT_JS.contains("1.1"),
+            "QR detect JS should check for square-ish ratio (0.9-1.1)"
+        );
+    }
+
+    #[test]
+    fn qr_detect_js_minimum_size_filter() {
+        assert!(
+            QR_DETECT_JS.contains(">= 100") && QR_DETECT_JS.contains(">= 150"),
+            "QR detect JS should have minimum size thresholds"
+        );
+    }
+
+    // ── V2: Persistent browser / domain tracking / extract_base_domain ──
+
+    #[test]
+    fn extract_base_domain_simple() {
+        assert_eq!(
+            extract_base_domain("https://www.facebook.com/login"),
+            Some("facebook".to_string())
+        );
+        assert_eq!(
+            extract_base_domain("https://facebook.com"),
+            Some("facebook".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_base_domain_no_www() {
+        assert_eq!(
+            extract_base_domain("https://github.com/login"),
+            Some("github".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_base_domain_subdomain() {
+        assert_eq!(
+            extract_base_domain("https://mail.google.com"),
+            Some("google".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_base_domain_with_port() {
+        assert_eq!(
+            extract_base_domain("http://localhost:8080/path"),
+            Some("localhost".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_base_domain_invalid() {
+        assert_eq!(extract_base_domain("not-a-url"), None);
+        assert_eq!(extract_base_domain(""), None);
+    }
+
+    #[test]
+    fn browser_tool_has_tracking_fields() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tool = BrowserTool::new();
+            // browser_started_at should start as None
+            assert!(tool.browser_started_at.lock().unwrap().is_none());
+            // active_domains should start empty
+            assert!(tool.active_domains.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn browser_tool_is_not_running_by_default() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tool = BrowserTool::new();
+            assert!(!tool.is_running());
+        });
+    }
+
+    #[test]
+    fn browser_tool_uptime_none_when_not_started() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tool = BrowserTool::new();
+            assert!(tool.uptime().is_none());
+        });
+    }
+
+    #[test]
+    fn browser_tool_get_active_domains_empty_default() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tool = BrowserTool::new();
+            assert!(tool.get_active_domains().is_empty());
+        });
+    }
+
+    #[test]
+    fn browser_tool_persistent_timeout_skips_watchdog() {
+        // When timeout is 0 (default), the watchdog should not auto-close
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tool = BrowserTool::new();
+            assert_eq!(tool.idle_timeout_secs, 0);
+            // Watchdog exists but idle_timeout == 0 means it skips auto-close
+        });
+    }
+
+    #[test]
+    fn browser_tool_nonzero_timeout_backwards_compat() {
+        // When timeout > 0, the old idle auto-close behavior is preserved
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tool = BrowserTool::with_timeout(600);
+            assert_eq!(tool.idle_timeout_secs, 600);
+        });
+    }
+
+    #[tokio::test]
+    async fn browser_tool_list_saved_sessions_no_vault() {
+        let tool = BrowserTool::new();
+        // No vault attached — should return empty
+        let sessions = tool.list_saved_sessions().await;
+        assert!(sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn browser_tool_forget_session_no_vault() {
+        let tool = BrowserTool::new();
+        let result = tool.forget_session("facebook").await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Vault not available");
+    }
+
+    #[tokio::test]
+    async fn browser_tool_close_with_capture_no_browser() {
+        let tool = BrowserTool::new();
+        let (msg, saved) = tool.close_with_capture().await;
+        assert_eq!(msg, "No browser was running.");
+        assert!(saved.is_empty());
     }
 }

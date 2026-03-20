@@ -135,6 +135,87 @@ pub fn create_tools(
     tools
 }
 
+/// Create tools and return a separate reference to the BrowserTool (if enabled).
+///
+/// This is used by the gateway to access browser-specific methods for the
+/// `/browser` command without needing to downcast from `Arc<dyn Tool>`.
+#[cfg(feature = "browser")]
+#[allow(clippy::too_many_arguments)]
+pub fn create_tools_with_browser(
+    config: &ToolsConfig,
+    channel: Option<Arc<dyn Channel>>,
+    pending_messages: Option<PendingMessages>,
+    memory: Option<Arc<dyn Memory>>,
+    setup_link_gen: Option<Arc<dyn SetupLinkGenerator>>,
+    usage_store: Option<Arc<dyn UsageStore>>,
+    shared_mode: Option<SharedMode>,
+    vault: Option<Arc<dyn Vault>>,
+) -> (Vec<Arc<dyn Tool>>, Option<Arc<BrowserTool>>) {
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+
+    if config.shell {
+        tools.push(Arc::new(ShellTool::new()));
+    }
+
+    if config.file {
+        tools.push(Arc::new(FileReadTool::new()));
+        tools.push(Arc::new(FileWriteTool::new()));
+        tools.push(Arc::new(FileListTool::new()));
+    }
+
+    if config.git {
+        tools.push(Arc::new(GitTool::new()));
+    }
+
+    if config.http {
+        tools.push(Arc::new(WebFetchTool::new()));
+    }
+
+    if let Some(ch) = channel {
+        tools.push(Arc::new(SendMessageTool::new(ch.clone())));
+        if ch.file_transfer().is_some() {
+            tools.push(Arc::new(SendFileTool::new(ch)));
+        }
+    }
+
+    if let Some(pending) = pending_messages {
+        tools.push(Arc::new(CheckMessagesTool::new(pending)));
+    }
+
+    if let Some(mem) = memory {
+        tools.push(Arc::new(MemoryManageTool::new(Arc::clone(&mem))));
+        tools.push(Arc::new(LambdaRecallTool::new(mem)));
+    }
+
+    tools.push(Arc::new(KeyManageTool::new(setup_link_gen)));
+
+    if let Some(store) = usage_store {
+        tools.push(Arc::new(UsageAuditTool::new(store)));
+    }
+
+    if let Some(mode) = shared_mode {
+        tools.push(Arc::new(ModeSwitchTool::new(mode)));
+    }
+
+    // browser: create as Arc<BrowserTool> and keep a reference
+    let browser_ref = if config.browser {
+        let browser_tool = BrowserTool::with_timeout(config.browser_timeout_secs);
+        let browser_tool = if let Some(ref v) = vault {
+            browser_tool.with_vault(Arc::clone(v))
+        } else {
+            browser_tool
+        };
+        let arc = Arc::new(browser_tool);
+        tools.push(arc.clone() as Arc<dyn Tool>);
+        Some(arc)
+    } else {
+        None
+    };
+
+    tracing::info!(count = tools.len(), "Tools registered (with browser ref)");
+    (tools, browser_ref)
+}
+
 /// Run an interactive browser login session from the CLI.
 ///
 /// Launches a headless Chrome browser, navigates to the given URL, and enters
@@ -178,9 +259,7 @@ pub async fn browser_session_login(
     // Spawn handler in background — continue on WS errors (chromiumoxide 0.7
     // can't deserialize some CDP messages from newer Chrome, but the connection
     // still works for our purposes)
-    let handle = tokio::spawn(async move {
-        while handler.next().await.is_some() {}
-    });
+    let handle = tokio::spawn(async move { while handler.next().await.is_some() {} });
 
     let mut session =
         browser_session::InteractiveBrowseSession::new(&browser, service, url).await?;

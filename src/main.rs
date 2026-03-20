@@ -223,6 +223,30 @@ async fn validate_provider_key(
 // Placeholder to satisfy the compiler for the deleted block below.
 // The actual functions are now imported at the top of this file.
 /// Check if a user is the admin by reading `~/.temm1e/allowlist.toml`.
+/// Format a capture timestamp into a human-readable age string.
+///
+/// Takes an ISO 8601 timestamp and returns e.g. "2h ago", "5m ago", "1d ago".
+#[cfg(feature = "browser")]
+fn format_capture_age(captured_at: &str) -> String {
+    let captured = match chrono::DateTime::parse_from_rfc3339(captured_at) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return "unknown".to_string(),
+    };
+    let elapsed = chrono::Utc::now().signed_duration_since(captured);
+    let secs = elapsed.num_seconds();
+    if secs < 0 {
+        "just now".to_string()
+    } else if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
 fn is_admin_user(user_id: &str) -> bool {
     let path = dirs::home_dir().map(|h| h.join(".temm1e").join("allowlist.toml"));
     let path = match path {
@@ -1371,8 +1395,9 @@ async fn main() -> Result<()> {
 
             // ── Active login sessions (OTK Prowl — per-chat interactive browser sessions) ────
             #[cfg(feature = "browser")]
-            let login_sessions: Arc<Mutex<HashMap<String, temm1e_tools::browser_session::InteractiveBrowseSession>>> =
-                Arc::new(Mutex::new(HashMap::new()));
+            let login_sessions: Arc<
+                Mutex<HashMap<String, temm1e_tools::browser_session::InteractiveBrowseSession>>,
+            > = Arc::new(Mutex::new(HashMap::new()));
 
             // ── Usage store (shares same SQLite DB as memory) ────
             let usage_store: Arc<dyn temm1e_core::UsageStore> =
@@ -1404,6 +1429,24 @@ async fn main() -> Result<()> {
             > = Arc::new(tokio::sync::RwLock::new(
                 temm1e_core::types::config::MemoryStrategy::Lambda,
             ));
+            // Use create_tools_with_browser to get a separate BrowserTool reference
+            // for /browser command handling.
+            #[cfg(feature = "browser")]
+            let (mut tools, browser_tool_ref) = temm1e_tools::create_tools_with_browser(
+                &config.tools,
+                censored_channel.clone(),
+                Some(pending_messages.clone()),
+                Some(memory.clone()),
+                Some(Arc::new(setup_tokens.clone()) as Arc<dyn temm1e_core::SetupLinkGenerator>),
+                Some(usage_store.clone()),
+                if personality_locked {
+                    None
+                } else {
+                    Some(shared_mode.clone())
+                },
+                vault.clone(),
+            );
+            #[cfg(not(feature = "browser"))]
             let mut tools = temm1e_tools::create_tools(
                 &config.tools,
                 censored_channel,
@@ -1411,7 +1454,6 @@ async fn main() -> Result<()> {
                 Some(memory.clone()),
                 Some(Arc::new(setup_tokens.clone()) as Arc<dyn temm1e_core::SetupLinkGenerator>),
                 Some(usage_store.clone()),
-                // Don't register mode_switch tool when personality is locked (work/pro)
                 if personality_locked {
                     None
                 } else {
@@ -1952,6 +1994,8 @@ async fn main() -> Result<()> {
                             let login_sessions_worker = login_sessions_clone.clone();
                             #[cfg(feature = "browser")]
                             let vault_for_login = vault.clone();
+                            #[cfg(feature = "browser")]
+                            let browser_ref_worker = browser_tool_ref.clone();
                             let usage_store_worker = usage_store_clone.clone();
                             let hive_worker = hive_clone.clone();
                             let worker_chat_id = chat_id.clone();
@@ -2290,6 +2334,10 @@ Available commands:\n\n\
 /mcp add <name> <command-or-url> — Connect a new MCP server\n\
 /mcp remove <name> — Disconnect an MCP server\n\
 /mcp restart <name> — Restart an MCP server\n\
+/browser — Browser status, sessions, and lifecycle\n\
+/browser close — Save sessions and close browser\n\
+/browser sessions — List saved web sessions\n\
+/browser forget <service> — Delete a saved session\n\
 /reload — Hot-reload config and agent (admin)\n\
 /reset — Factory reset all local state (admin)\n\
 /restart — Restart TEMM1E process (admin)\n\n\
@@ -2767,6 +2815,103 @@ Just type a message to chat with the AI agent.",
                                             is_heartbeat_clone.store(false, Ordering::Relaxed);
                                             return;
                                         }
+                                    }
+
+                                    // /browser — browser lifecycle management (V2)
+                                    #[cfg(feature = "browser")]
+                                    if cmd_lower == "/browser" || cmd_lower.starts_with("/browser ") {
+                                        let browser_args = if cmd_lower == "/browser" {
+                                            ""
+                                        } else {
+                                            msg_text_cmd.trim().strip_prefix("/browser").unwrap_or("").trim()
+                                        };
+                                        let browser_args_lower = browser_args.to_lowercase();
+
+                                        let response_text = if browser_args_lower.is_empty() || browser_args_lower == "status" {
+                                            // /browser or /browser status — report state
+                                            match &browser_ref_worker {
+                                                Some(bt) => {
+                                                    if bt.is_running() {
+                                                        let domains = bt.get_active_domains();
+                                                        let sessions_str = if domains.is_empty() {
+                                                            "none".to_string()
+                                                        } else {
+                                                            let mut sorted: Vec<_> = domains.into_iter().collect();
+                                                            sorted.sort();
+                                                            sorted.join(", ")
+                                                        };
+                                                        let uptime = bt.uptime().unwrap_or_else(|| "unknown".to_string());
+                                                        format!(
+                                                            "\u{1f310} Browser: Active\nSessions: {}\nUptime: {}",
+                                                            sessions_str, uptime
+                                                        )
+                                                    } else {
+                                                        "\u{1f310} Browser: Inactive. Will start on next web task.".to_string()
+                                                    }
+                                                }
+                                                None => "\u{1f310} Browser: Not configured.".to_string(),
+                                            }
+                                        } else if browser_args_lower == "close" {
+                                            // /browser close — auto-capture and close
+                                            match &browser_ref_worker {
+                                                Some(bt) => {
+                                                    let (msg, saved) = bt.close_with_capture().await;
+                                                    if saved.is_empty() {
+                                                        format!("\u{1f512} {}", msg)
+                                                    } else {
+                                                        format!(
+                                                            "\u{1f4be} Sessions saved: {}\n\u{1f512} {}",
+                                                            saved.join(", "), msg
+                                                        )
+                                                    }
+                                                }
+                                                None => "Browser not configured.".to_string(),
+                                            }
+                                        } else if browser_args_lower == "sessions" {
+                                            // /browser sessions — list saved vault sessions
+                                            match &browser_ref_worker {
+                                                Some(bt) => {
+                                                    let sessions = bt.list_saved_sessions().await;
+                                                    if sessions.is_empty() {
+                                                        "\u{1f4cb} No saved sessions.".to_string()
+                                                    } else {
+                                                        let mut lines = vec!["\u{1f4cb} Saved sessions:".to_string()];
+                                                        for (service, captured_at) in &sessions {
+                                                            let age = format_capture_age(captured_at);
+                                                            lines.push(format!("- {} (captured {})", service, age));
+                                                        }
+                                                        lines.join("\n")
+                                                    }
+                                                }
+                                                None => "Browser not configured.".to_string(),
+                                            }
+                                        } else if browser_args_lower.starts_with("forget ") {
+                                            // /browser forget <service>
+                                            let service = browser_args["forget ".len()..].trim();
+                                            if service.is_empty() {
+                                                "Usage: /browser forget <service>".to_string()
+                                            } else {
+                                                match &browser_ref_worker {
+                                                    Some(bt) => match bt.forget_session(service).await {
+                                                        Ok(()) => format!("\u{1f5d1}\u{fe0f} Session for '{}' deleted.", service),
+                                                        Err(e) => format!("Failed: {}", e),
+                                                    },
+                                                    None => "Browser not configured.".to_string(),
+                                                }
+                                            }
+                                        } else {
+                                            "Usage: /browser [status|close|sessions|forget <service>]".to_string()
+                                        };
+
+                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                            chat_id: msg.chat_id.clone(),
+                                            text: response_text,
+                                            reply_to: Some(msg.id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        send_with_retry(&*sender, reply).await;
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
                                     }
 
                                     // /reset — factory reset from messaging (admin only)
@@ -3979,6 +4124,18 @@ Just type a message to chat with the AI agent.",
             > = Arc::new(tokio::sync::RwLock::new(
                 temm1e_core::types::config::MemoryStrategy::Lambda,
             ));
+            #[cfg(feature = "browser")]
+            let (mut tools_template, cli_browser_ref) = temm1e_tools::create_tools_with_browser(
+                &config.tools,
+                Some(censored_cli),
+                Some(pending_messages.clone()),
+                Some(memory.clone()),
+                Some(Arc::new(setup_tokens.clone()) as Arc<dyn temm1e_core::SetupLinkGenerator>),
+                Some(usage_store.clone()),
+                Some(shared_mode.clone()),
+                vault.clone(),
+            );
+            #[cfg(not(feature = "browser"))]
             let mut tools_template = temm1e_tools::create_tools(
                 &config.tools,
                 Some(censored_cli),
@@ -4297,6 +4454,10 @@ Just type a message to chat with the AI agent.",
                          /mcp add <name> <command-or-url> — Connect a new MCP server\n\
                          /mcp remove <name> — Disconnect an MCP server\n\
                          /mcp restart <name> — Restart an MCP server\n\
+                         /browser — Browser status, sessions, and lifecycle\n\
+                         /browser close — Save sessions and close browser\n\
+                         /browser sessions — List saved web sessions\n\
+                         /browser forget <service> — Delete a saved session\n\
                          /quit — Exit the CLI chat\n\n\
                          Just type a message to chat with the AI agent.\n",
                         env!("CARGO_PKG_VERSION"),
@@ -4547,6 +4708,92 @@ Just type a message to chat with the AI agent.",
                              /mcp add playwright npx @playwright/mcp@latest\n\
                              /mcp add myapi https://mcp.example.com/sse\n"
                         );
+                    }
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
+                // /browser — browser lifecycle management (V2)
+                #[cfg(feature = "browser")]
+                if cmd_lower == "/browser" || cmd_lower.starts_with("/browser ") {
+                    let browser_args = if cmd_lower == "/browser" {
+                        ""
+                    } else {
+                        msg_text
+                            .trim()
+                            .strip_prefix("/browser")
+                            .unwrap_or("")
+                            .trim()
+                    };
+                    let browser_args_lower = browser_args.to_lowercase();
+
+                    if browser_args_lower.is_empty() || browser_args_lower == "status" {
+                        match &cli_browser_ref {
+                            Some(bt) => {
+                                if bt.is_running() {
+                                    let domains = bt.get_active_domains();
+                                    let sessions_str = if domains.is_empty() {
+                                        "none".to_string()
+                                    } else {
+                                        let mut sorted: Vec<_> = domains.into_iter().collect();
+                                        sorted.sort();
+                                        sorted.join(", ")
+                                    };
+                                    let uptime =
+                                        bt.uptime().unwrap_or_else(|| "unknown".to_string());
+                                    println!(
+                                        "\nBrowser: Active\nSessions: {}\nUptime: {}\n",
+                                        sessions_str, uptime
+                                    );
+                                } else {
+                                    println!("\nBrowser: Inactive. Will start on next web task.\n");
+                                }
+                            }
+                            None => println!("\nBrowser: Not configured.\n"),
+                        }
+                    } else if browser_args_lower == "close" {
+                        match &cli_browser_ref {
+                            Some(bt) => {
+                                let (msg, saved) = bt.close_with_capture().await;
+                                if !saved.is_empty() {
+                                    println!("\nSessions saved: {}", saved.join(", "));
+                                }
+                                println!("{}\n", msg);
+                            }
+                            None => println!("\nBrowser not configured.\n"),
+                        }
+                    } else if browser_args_lower == "sessions" {
+                        match &cli_browser_ref {
+                            Some(bt) => {
+                                let sessions = bt.list_saved_sessions().await;
+                                if sessions.is_empty() {
+                                    println!("\nNo saved sessions.\n");
+                                } else {
+                                    println!("\nSaved sessions:");
+                                    for (service, captured_at) in &sessions {
+                                        let age = format_capture_age(captured_at);
+                                        println!("  - {} (captured {})", service, age);
+                                    }
+                                    println!();
+                                }
+                            }
+                            None => println!("\nBrowser not configured.\n"),
+                        }
+                    } else if browser_args_lower.starts_with("forget ") {
+                        let service = browser_args["forget ".len()..].trim();
+                        if service.is_empty() {
+                            println!("\nUsage: /browser forget <service>\n");
+                        } else {
+                            match &cli_browser_ref {
+                                Some(bt) => match bt.forget_session(service).await {
+                                    Ok(()) => println!("\nSession for \'{}\' deleted.\n", service),
+                                    Err(e) => println!("\nFailed: {}\n", e),
+                                },
+                                None => println!("\nBrowser not configured.\n"),
+                            }
+                        }
+                    } else {
+                        println!("\nUsage: /browser [status|close|sessions|forget <service>]\n");
                     }
                     eprint!("temm1e> ");
                     continue;

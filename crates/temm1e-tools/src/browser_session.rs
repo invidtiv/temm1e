@@ -324,8 +324,7 @@ impl InteractiveBrowseSession {
             primary: bool,
         }
 
-        let elements: Vec<JsElement> =
-            serde_json::from_str(&json_str).unwrap_or_default();
+        let elements: Vec<JsElement> = serde_json::from_str(&json_str).unwrap_or_default();
 
         // Build description — show all elements with clear formatting
         self.element_map.clear();
@@ -338,7 +337,10 @@ impl InteractiveBrowseSession {
         // Add usage hint
         let _ = writeln!(&mut description);
         let _ = writeln!(&mut description, "💡 Commands:");
-        let _ = writeln!(&mut description, "  1 your@email.com  → select field & type");
+        let _ = writeln!(
+            &mut description,
+            "  1 your@email.com  → select field & type"
+        );
         let _ = writeln!(&mut description, "  3                 → click button");
         let _ = writeln!(&mut description, "  done              → save & exit");
 
@@ -385,6 +387,27 @@ impl InteractiveBrowseSession {
         // 5. Remove overlay labels
         if let Err(e) = self.page.evaluate(OVERLAY_REMOVE_JS).await {
             tracing::debug!(error = %e, "Failed to remove overlay labels");
+        }
+
+        // 6. QR code detection — if found, prepend a prominent note so the
+        //    user knows to scan the QR code visible in the screenshot above.
+        let qr_detected = match self.page.evaluate(crate::browser::QR_DETECT_JS).await {
+            Ok(result) => {
+                let detection = result
+                    .into_value::<String>()
+                    .unwrap_or_else(|_| "no_qr".to_string());
+                detection != "no_qr"
+            }
+            Err(_) => false,
+        };
+
+        if qr_detected {
+            let qr_note = "\u{1F4F1} QR code detected! Scan the image above to log in.\n\n";
+            description.insert_str(0, qr_note);
+            tracing::info!(
+                session_id = %self.session_id,
+                "QR code detected during interactive session"
+            );
         }
 
         if description.is_empty() {
@@ -504,19 +527,25 @@ impl InteractiveBrowseSession {
                     use chromiumoxide::cdp::browser_protocol::input::DispatchKeyEventParams;
                     use chromiumoxide::cdp::browser_protocol::input::DispatchKeyEventType;
                     for ch in zeroizing.chars() {
-                        let _ = self.page.execute(
-                            DispatchKeyEventParams::builder()
-                                .r#type(DispatchKeyEventType::KeyDown)
-                                .text(ch.to_string())
-                                .build()
-                                .unwrap()
-                        ).await;
-                        let _ = self.page.execute(
-                            DispatchKeyEventParams::builder()
-                                .r#type(DispatchKeyEventType::KeyUp)
-                                .build()
-                                .unwrap()
-                        ).await;
+                        let _ = self
+                            .page
+                            .execute(
+                                DispatchKeyEventParams::builder()
+                                    .r#type(DispatchKeyEventType::KeyDown)
+                                    .text(ch.to_string())
+                                    .build()
+                                    .unwrap(),
+                            )
+                            .await;
+                        let _ = self
+                            .page
+                            .execute(
+                                DispatchKeyEventParams::builder()
+                                    .r#type(DispatchKeyEventType::KeyUp)
+                                    .build()
+                                    .unwrap(),
+                            )
+                            .await;
                     }
                     tracing::debug!(
                         session_id = %self.session_id,
@@ -866,8 +895,11 @@ pub async fn restore_web_session(
         url: String,
     }
 
-    let verify: VerifyResult = serde_json::from_str(&verify_json)
-        .unwrap_or(VerifyResult { has_login: true, title: String::new(), url: String::new() });
+    let verify: VerifyResult = serde_json::from_str(&verify_json).unwrap_or(VerifyResult {
+        has_login: true,
+        title: String::new(),
+        url: String::new(),
+    });
 
     let tree_text = format!("Page: {} ({})", verify.title, verify.url);
     let has_login_prompt = verify.has_login;

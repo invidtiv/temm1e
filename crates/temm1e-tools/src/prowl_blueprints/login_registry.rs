@@ -94,7 +94,10 @@ static KNOWN_SERVICES: std::sync::LazyLock<HashMap<&'static str, &'static str>> 
         m.insert("linkedin", "https://www.linkedin.com/login");
         m.insert("reddit", "https://www.reddit.com/login/");
         m.insert("pinterest", "https://www.pinterest.com/login/");
-        m.insert("snapchat", "https://accounts.snapchat.com/accounts/v2/login");
+        m.insert(
+            "snapchat",
+            "https://accounts.snapchat.com/accounts/v2/login",
+        );
         m.insert("threads", "https://www.threads.net/login");
         m.insert("tumblr", "https://www.tumblr.com/login");
         m.insert("mastodon", "https://mastodon.social/auth/sign_in");
@@ -227,7 +230,10 @@ mod tests {
 
     #[test]
     fn lookup_known_service() {
-        assert_eq!(lookup_login_url("facebook"), Some("https://www.facebook.com/login"));
+        assert_eq!(
+            lookup_login_url("facebook"),
+            Some("https://www.facebook.com/login")
+        );
         assert_eq!(lookup_login_url("github"), Some("https://github.com/login"));
         assert_eq!(lookup_login_url("FACEBOOK"), None); // case-sensitive lookup, resolve handles lowercase
     }
@@ -276,6 +282,10 @@ mod tests {
     #[test]
     fn registry_has_100_services() {
         // We should have at least 100 entries (including aliases)
-        assert!(KNOWN_SERVICES.len() >= 100, "Registry has {} entries", KNOWN_SERVICES.len());
+        assert!(
+            KNOWN_SERVICES.len() >= 100,
+            "Registry has {} entries",
+            KNOWN_SERVICES.len()
+        );
     }
 }
