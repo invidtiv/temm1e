@@ -15,7 +15,12 @@
 set -e
 
 REPO="temm1e-labs/temm1e"
-INSTALL_DIR="${HOME}/.local/bin"
+# Default to ~/bin if it exists and is in PATH, otherwise ~/.local/bin
+if [ -d "${HOME}/bin" ] && echo "$PATH" | grep -q "${HOME}/bin"; then
+    INSTALL_DIR="${HOME}/bin"
+else
+    INSTALL_DIR="${HOME}/.local/bin"
+fi
 BINARY_NAME="temm1e"
 GLOBAL=false
 
@@ -34,19 +39,10 @@ for arg in "$@"; do
 done
 
 # Colors (only if terminal supports them)
-if [ -t 1 ]; then
-    BOLD="\033[1m"
-    GREEN="\033[32m"
-    RED="\033[31m"
-    YELLOW="\033[33m"
-    RESET="\033[0m"
-else
-    BOLD="" GREEN="" RED="" YELLOW="" RESET=""
-fi
-
-info()  { printf "${GREEN}>${RESET} %s\n" "$1"; }
-warn()  { printf "${YELLOW}!${RESET} %s\n" "$1"; }
-error() { printf "${RED}x${RESET} %s\n" "$1"; exit 1; }
+# No colors — keeps output clean when piped through sh
+info()  { printf "> %s\n" "$1"; }
+warn()  { printf "! %s\n" "$1"; }
+error() { printf "x %s\n" "$1"; exit 1; }
 
 # Detect OS
 OS="$(uname -s)"
@@ -77,7 +73,7 @@ if [ -z "$LATEST_TAG" ]; then
     error "Could not find latest release. Check https://github.com/${REPO}/releases"
 fi
 
-info "Latest version: ${BOLD}${LATEST_TAG}${RESET}"
+info "Latest version: ${LATEST_TAG}"
 
 # Download binary
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${ARTIFACT}"
@@ -130,7 +126,7 @@ fi
 # Verify installation
 if "${INSTALL_DIR}/${BINARY_NAME}" --version >/dev/null 2>&1; then
     VERSION=$("${INSTALL_DIR}/${BINARY_NAME}" --version 2>&1 || echo "unknown")
-    info "Installed: ${BOLD}${VERSION}${RESET}"
+    info "Installed: ${VERSION}"
 else
     info "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 fi
@@ -149,7 +145,7 @@ case ":$PATH:" in
 esac
 
 echo ""
-printf "${GREEN}${BOLD}TEMM1E installed!${RESET}\n"
+printf "TEMM1E installed!\n"
 echo ""
 echo "  Quick start:"
 echo "    temm1e setup          # Interactive setup wizard"
