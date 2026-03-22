@@ -1125,8 +1125,7 @@ async fn run_setup_wizard() -> Result<()> {
                 };
                 println!("  Detected provider: {provider}");
                 let creds_path = temm1e_dir.join("credentials.toml");
-                let creds_content =
-                    format!("[providers.{}]\napi_key = \"{}\"\n", provider, key);
+                let creds_content = format!("[providers.{}]\napi_key = \"{}\"\n", provider, key);
                 std::fs::write(&creds_path, creds_content)?;
                 println!("  Saved to ~/.temm1e/credentials.toml");
             } else {
