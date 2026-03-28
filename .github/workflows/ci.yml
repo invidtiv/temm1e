@@ -113,7 +113,7 @@ jobs:
   # -----------------------------------------------
   build-glibc:
     name: Build (glibc — desktop)
-    runs-on: ubuntu-22.04    # glibc 2.35 — runs on Ubuntu 22.04+
+    runs-on: ubuntu-24.04    # glibc 2.39 — runs on Ubuntu 24.04+. Needs PipeWire 0.3.65+ headers.
     needs: test
     steps:
       - uses: actions/checkout@v4
