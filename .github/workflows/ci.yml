@@ -98,7 +98,10 @@ jobs:
           fi
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin temm1e
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin temm1e \
+            --no-default-features \
+            --features telegram,discord,browser,mcp,codex-oauth,openssl-vendored
 
       - name: Check binary size (<10 MB)
         run: |
