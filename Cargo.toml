@@ -21,10 +21,11 @@ members = [
     "crates/temm1e-hive",
     "crates/temm1e-distill",
     "crates/temm1e-gaze",
+    "crates/temm1e-perpetuum",
 ]
 
 [workspace.package]
-version = "4.0.0"
+version = "4.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/nagisanzenin/temm1e"
@@ -111,6 +112,9 @@ dirs = "6"
 pin-project-lite = "0.2"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
+cron = "0.13"
+chrono-tz = { version = "0.10", features = ["serde"] }
+scraper = "0.22"
 
 # Internal crates
 temm1e-core = { path = "crates/temm1e-core" }
@@ -132,6 +136,7 @@ temm1e-tui = { path = "crates/temm1e-tui" }
 temm1e-hive = { path = "crates/temm1e-hive" }
 temm1e-distill = { path = "crates/temm1e-distill" }
 temm1e-gaze = { path = "crates/temm1e-gaze" }
+temm1e-perpetuum = { path = "crates/temm1e-perpetuum" }
 
 [package]
 name = "temm1e"
@@ -163,6 +168,7 @@ temm1e-codex-oauth = { workspace = true, optional = true }
 temm1e-tui = { workspace = true, optional = true }
 temm1e-gaze = { workspace = true, optional = true }
 temm1e-hive.workspace = true
+temm1e-perpetuum.workspace = true
 tokio.workspace = true
 clap.workspace = true
 dirs.workspace = true

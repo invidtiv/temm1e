@@ -1808,6 +1808,12 @@ async fn main() -> Result<()> {
                 mgr
             };
 
+            // Perpetuum state (initialized lazily after provider is ready)
+            let perpetuum: Arc<tokio::sync::RwLock<Option<Arc<temm1e_perpetuum::Perpetuum>>>> =
+                Arc::new(tokio::sync::RwLock::new(None));
+            let perpetuum_temporal: Arc<tokio::sync::RwLock<String>> =
+                Arc::new(tokio::sync::RwLock::new(String::new()));
+
             let system_prompt = Some(build_system_prompt());
 
             // Quick check: is [hive] enabled in config? (just the boolean, full init later)
@@ -1925,9 +1931,65 @@ async fn main() -> Result<()> {
                             ),
                         );
                     }
+                    // Wire Perpetuum temporal context into agent
+                    runtime = runtime.with_perpetuum_temporal(perpetuum_temporal.clone());
                     let agent = Arc::new(runtime);
                     *agent_state.write().await = Some(agent);
                     tracing::info!(provider = %pname, model = %model, "Agent initialized");
+
+                    // ── Perpetuum lazy init (needs provider) ──────
+                    if config.perpetuum.enabled && perpetuum.read().await.is_none() {
+                        let perpetuum_db = dirs::home_dir()
+                            .unwrap_or_else(|| std::path::PathBuf::from("."))
+                            .join(".temm1e/perpetuum.db");
+                        let db_url = format!("sqlite:{}?mode=rwc", perpetuum_db.display());
+
+                        let perp_config = temm1e_perpetuum::PerpetualConfig {
+                            enabled: true,
+                            timezone: config.perpetuum.timezone.clone(),
+                            max_concerns: config.perpetuum.max_concerns,
+                            conscience: temm1e_perpetuum::ConscienceConfig {
+                                idle_threshold_secs: config
+                                    .perpetuum
+                                    .conscience_idle_threshold_secs
+                                    .unwrap_or(900),
+                                dream_threshold_secs: config
+                                    .perpetuum
+                                    .conscience_dream_threshold_secs
+                                    .unwrap_or(3600),
+                            },
+                            cognitive: temm1e_perpetuum::CognitiveConfig {
+                                review_every_n_checks: config.perpetuum.review_every_n_checks,
+                                interpret_changes: true,
+                            },
+                            volition: temm1e_perpetuum::VolitionConfig {
+                                enabled: config.perpetuum.volition_enabled,
+                                interval_secs: config.perpetuum.volition_interval_secs,
+                                max_actions_per_cycle: config.perpetuum.volition_max_actions,
+                                event_triggered: true,
+                            },
+                        };
+
+                        match temm1e_perpetuum::Perpetuum::new(
+                            perp_config,
+                            provider.clone(),
+                            model.clone(),
+                            channel_map.clone(),
+                            &db_url,
+                        )
+                        .await
+                        {
+                            Ok(p) => {
+                                let p = Arc::new(p);
+                                p.start();
+                                *perpetuum.write().await = Some(p);
+                                tracing::info!("Perpetuum runtime started");
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to initialize Perpetuum");
+                            }
+                        }
+                    }
                 }
             } else {
                 // Check if Codex OAuth tokens exist — use those instead of API key
@@ -2152,6 +2214,15 @@ async fn main() -> Result<()> {
                     while let Some(inbound) = msg_rx.recv().await {
                         let chat_id = inbound.chat_id.clone();
                         let is_heartbeat_msg = inbound.channel == "heartbeat";
+
+                        // ── Perpetuum: record interaction + refresh temporal context ──
+                        if !is_heartbeat_msg {
+                            if let Some(ref perp) = *perpetuum.read().await {
+                                perp.record_user_interaction().await;
+                                let temporal = perp.temporal_injection("standard").await;
+                                *perpetuum_temporal.write().await = temporal;
+                            }
+                        }
 
                         let mut slots = chat_slots.lock().await;
 
@@ -4748,6 +4819,112 @@ Just type a message to chat with the AI agent.",
                                     ),
                                 );
                             }
+                            // ── Perpetuum: init for CLI chat ──────────
+                            let cli_perpetuum_temporal: Arc<tokio::sync::RwLock<String>> =
+                                Arc::new(tokio::sync::RwLock::new(String::new()));
+                            if config.perpetuum.enabled {
+                                let perpetuum_db = dirs::home_dir()
+                                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                                    .join(".temm1e/perpetuum.db");
+                                let db_url = format!("sqlite:{}?mode=rwc", perpetuum_db.display());
+
+                                let perp_config = temm1e_perpetuum::PerpetualConfig {
+                                    enabled: true,
+                                    timezone: config.perpetuum.timezone.clone(),
+                                    max_concerns: config.perpetuum.max_concerns,
+                                    conscience: temm1e_perpetuum::ConscienceConfig {
+                                        idle_threshold_secs: config
+                                            .perpetuum
+                                            .conscience_idle_threshold_secs
+                                            .unwrap_or(900),
+                                        dream_threshold_secs: config
+                                            .perpetuum
+                                            .conscience_dream_threshold_secs
+                                            .unwrap_or(3600),
+                                    },
+                                    cognitive: temm1e_perpetuum::CognitiveConfig {
+                                        review_every_n_checks: config
+                                            .perpetuum
+                                            .review_every_n_checks,
+                                        interpret_changes: true,
+                                    },
+                                    volition: temm1e_perpetuum::VolitionConfig {
+                                        enabled: config.perpetuum.volition_enabled,
+                                        interval_secs: config.perpetuum.volition_interval_secs,
+                                        max_actions_per_cycle: config
+                                            .perpetuum
+                                            .volition_max_actions,
+                                        event_triggered: true,
+                                    },
+                                };
+
+                                // Register CLI channel for Perpetuum notifications
+                                let mut cli_ch_map: HashMap<String, Arc<dyn temm1e_core::Channel>> =
+                                    HashMap::new();
+                                cli_ch_map.insert("cli".to_string(), cli_arc.clone());
+                                let cli_channel_map = Arc::new(cli_ch_map);
+
+                                match temm1e_perpetuum::Perpetuum::new(
+                                    perp_config,
+                                    consciousness_provider.clone(),
+                                    model.clone(),
+                                    cli_channel_map,
+                                    &db_url,
+                                )
+                                .await
+                                {
+                                    Ok(p) => {
+                                        let p = Arc::new(p);
+                                        let perp_tools = p.tools();
+                                        tracing::info!(
+                                            count = perp_tools.len(),
+                                            "Perpetuum tools loaded"
+                                        );
+                                        tools_template.extend(perp_tools);
+                                        // Re-create the agent runtime with updated tools
+                                        let mut rt2 = temm1e_agent::AgentRuntime::with_limits(
+                                            consciousness_provider.clone(),
+                                            memory.clone(),
+                                            tools_template.clone(),
+                                            model.clone(),
+                                            Some(build_system_prompt()),
+                                            max_turns,
+                                            max_ctx,
+                                            max_rounds,
+                                            max_task_duration,
+                                            max_spend,
+                                        )
+                                        .with_v2_optimizations(v2_opt)
+                                        .with_parallel_phases(pp_opt)
+                                        .with_hive_enabled(hive_enabled_early)
+                                        .with_shared_mode(shared_mode.clone())
+                                        .with_shared_memory_strategy(shared_memory_strategy.clone())
+                                        .with_perpetuum_temporal(cli_perpetuum_temporal.clone());
+                                        if config.consciousness.enabled {
+                                            rt2 = rt2.with_consciousness(
+                                                temm1e_agent::consciousness_engine::ConsciousnessEngine::new(
+                                                    temm1e_agent::consciousness::ConsciousnessConfig {
+                                                        enabled: true,
+                                                        confidence_threshold: config.consciousness.confidence_threshold,
+                                                        max_interventions_per_session: config.consciousness.max_interventions_per_session,
+                                                        observation_mode: config.consciousness.observation_mode.clone(),
+                                                    },
+                                                    consciousness_provider.clone(),
+                                                    model.clone(),
+                                                ),
+                                            );
+                                        }
+                                        rt = rt2;
+                                        p.start();
+                                        tracing::info!("Perpetuum runtime started (CLI chat)");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "Failed to init Perpetuum for CLI chat");
+                                    }
+                                }
+                            }
+                            rt = rt.with_perpetuum_temporal(cli_perpetuum_temporal);
+
                             agent_opt = Some(rt);
                             println!("Connected to {} (model: {})", pname, model);
                             if max_spend > 0.0 {

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use base64::Engine;
@@ -28,7 +29,6 @@ use temm1e_core::types::error::classify_tool_failure;
 use temm1e_core::types::optimization::VerifyMode;
 
 use temm1e_core::types::config::Temm1eMode;
-use tokio::sync::RwLock;
 
 use crate::agent_task_status::{AgentTaskPhase, AgentTaskStatus};
 use crate::budget::{self, BudgetTracker, ModelPricing};
@@ -95,6 +95,9 @@ pub struct AgentRuntime {
     /// Tem Conscious — consciousness observer that watches internal state and
     /// selectively injects context to improve outcomes. None = disabled.
     consciousness: Option<crate::consciousness_engine::ConsciousnessEngine>,
+    /// Perpetuum temporal context injection string. Updated externally before each call.
+    /// When set, prepended to the system prompt for time awareness.
+    perpetuum_temporal: Option<Arc<RwLock<String>>>,
 }
 
 impl AgentRuntime {
@@ -129,6 +132,7 @@ impl AgentRuntime {
             shared_mode: None,
             shared_memory_strategy: None,
             consciousness: None,
+            perpetuum_temporal: None,
         }
     }
 
@@ -197,6 +201,7 @@ impl AgentRuntime {
             shared_mode: None,
             shared_memory_strategy: None,
             consciousness: None,
+            perpetuum_temporal: None,
         }
     }
 
@@ -263,6 +268,13 @@ impl AgentRuntime {
     /// tool-level parallelism in executor.rs.
     pub fn with_parallel_phases(mut self, enabled: bool) -> Self {
         self.parallel_phases = enabled;
+        self
+    }
+
+    /// Set the Perpetuum temporal context injection handle.
+    /// The Arc<RwLock<String>> is updated externally by Perpetuum before each message.
+    pub fn with_perpetuum_temporal(mut self, temporal: Arc<RwLock<String>>) -> Self {
+        self.perpetuum_temporal = Some(temporal);
         self
     }
 
@@ -814,6 +826,17 @@ impl AgentRuntime {
                     Some(existing) => format!("{mode_block}\n\n{existing}"),
                     None => mode_block,
                 });
+            }
+
+            // ── Perpetuum: temporal context injection ─────────────────────
+            if let Some(ref temporal) = self.perpetuum_temporal {
+                let temporal_str = temporal.read().await.clone();
+                if !temporal_str.is_empty() {
+                    request.system = Some(match request.system {
+                        Some(existing) => format!("{temporal_str}\n\n{existing}"),
+                        None => temporal_str,
+                    });
+                }
             }
 
             // ── Tem Conscious: PRE-LLM consciousness (LLM-powered) ──────────

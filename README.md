@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.gg/3ux2c5xz"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.0.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-4.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever.</h3>
 
 <p align="center">
-  <code>99K lines</code> · <code>1,037 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>19 crates</code> · <code>full computer use</code>
+  <code>105K lines</code> · <code>1,935 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>20 crates</code> · <code>full computer use</code>
 </p>
 
 ---
@@ -361,6 +361,28 @@ User message → CONSCIOUSNESS THINKS (pre-LLM call) → Agent responds → CONS
 
 [Research paper →](tems_lab/consciousness/RESEARCH_PAPER.md) · [Experiment report →](tems_lab/consciousness/EXPERIMENT_REPORT.md) · [Blog →](tems_lab/consciousness/BLOG.md) · [Full lab →](tems_lab/consciousness/)
 
+### Perpetuum — Perpetual Time-Aware Entity
+
+Tem is no longer a request-response agent. Perpetuum makes Tem a **persistent, time-aware entity** — always on, aware of time, capable of scheduling and monitoring, and proactively investing idle time in self-improvement.
+
+**Core architecture:**
+- **Chronos** — internal clock + temporal cognition injected into every LLM call. Tem reasons WITH time.
+- **Pulse** — timer engine (cron + intervals, timezone-aware). Concerns fire at exact scheduled times.
+- **Cortex** — concern dispatcher. Each concern runs in its own tokio task with `catch_unwind` isolation.
+- **Cognitive** — LLM-powered monitor interpretation + adaptive schedule review. No formulas — pure LLM judgment.
+- **Conscience** — entity state machine: Active / Idle / Sleep / Dream. States are proactive choices, not energy constraints.
+- **Volition** — initiative loop: Tem thinks about what to do proactively. Creates monitors, cancels stale concerns, notifies users — without being asked.
+
+**6 agent tools:** `create_alarm`, `create_monitor`, `create_recurring`, `list_concerns`, `cancel_concern`, `adjust_schedule`
+
+**Design principle — The Enabling Framework:** Infrastructure is code, intelligence is LLM. No hardcoded heuristics. As models get smarter, Perpetuum gets smarter — without code changes. Timeproof by design.
+
+**Resilience (24/7/365):** Pulse auto-restarts on panic. 60s LLM timeout. Atomic concern claiming. Per-concern error budgets. Process crash recovers from SQLite.
+
+**ON by default.** Disable: `[perpetuum] enabled = false`.
+
+[Research paper →](tems_lab/perpetuum/RESEARCH_PAPER.md) · [Vision →](tems_lab/perpetuum/VISION.md) · [Implementation →](tems_lab/perpetuum/IMPLEMENTATION_PLAN.md) · [Full lab →](tems_lab/perpetuum/)
+
 ---
 
 ## Interactive TUI
@@ -463,6 +485,7 @@ temm1e (binary)
 ├─ temm1e-hive           MANY TEMS — swarm intelligence, pack coordination, scent field
 ├─ temm1e-distill        EIGEN-TUNE — self-tuning distillation, statistical gates, zero-cost evaluation
 ├─ temm1e-gaze           TEM GAZE — desktop vision control (xcap + enigo), SoM overlay, zoom-refine
+├─ temm1e-perpetuum      PERPETUUM — perpetual time-aware entity, scheduling, monitors, volition
 ├─ temm1e-providers      Anthropic + Gemini (native) + OpenAI-compatible (6 providers)
 ├─ temm1e-codex-oauth    ChatGPT Plus/Pro via OAuth PKCE
 ├─ temm1e-tui            Interactive terminal UI (ratatui + syntect)
@@ -617,7 +640,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 1,037 tests
+cargo test --workspace                                               # 1,935 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -631,6 +654,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-01  v4.1.0  ●━━━ Perpetuum — perpetual time-aware entity framework. Tem becomes always-on: Chronos (temporal cognition injected into every LLM call), Pulse (cron + timer scheduling), Cortex (concern dispatcher with catch_unwind isolation), Conscience (Active/Idle/Sleep/Dream state machine), Cognitive (LLM-powered monitor interpretation + adaptive schedule review), Volition (proactive initiative loop with guardrails). 6 agent tools: create_alarm, create_monitor, create_recurring, list_concerns, cancel_concern, adjust_schedule. Enabling Framework pillar: infrastructure is code, intelligence is LLM. Resilience hardened: 60s LLM timeout, atomic concern claiming, Pulse auto-restart on panic. 20 crates, 1935 tests.
+
 2026-03-29  v4.0.0  ●━━━ Tem Conscious — LLM-powered consciousness layer. Separate observer that thinks before and after every agent turn. Pre-LLM injection of session context + failure warnings. Post-LLM evaluation of turn quality. A/B tested across 6 experiments (340 tests): conscious won 3, unconscious won 1, tied 2. Consciousness ON by default. 19 crates, 1037 tests.
                     │
 2026-03-28  v3.4.0  ●━━━ Tem Gaze — vision-primary desktop control + Prowl V2 browser upgrade. New temm1e-gaze crate (xcap + enigo), SoM overlay on Tier 3 observations (650 elements stress-tested), zoom_region 2x CDP clip, blueprint bypass (100+ services), desktop screenshot/click/type/key/scroll/drag, auto-capture post-click verification. Proven live: Spotlight→TextEdit→typed message via Gemini Flash. 19 crates, 1028 tests, zero new deps for browser users (desktop feature-gated)

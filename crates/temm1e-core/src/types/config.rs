@@ -68,6 +68,64 @@ pub struct Temm1eConfig {
     pub gaze: GazeConfig,
     #[serde(default)]
     pub consciousness: ConsciousnessConfig,
+    #[serde(default)]
+    pub perpetuum: PerpetualConfig,
+}
+
+/// Perpetuum configuration — perpetual time-aware entity framework.
+/// Enabled by default. Set `enabled = false` to opt out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerpetualConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_perpetuum_timezone")]
+    pub timezone: String,
+    #[serde(default = "default_perpetuum_max_concerns")]
+    pub max_concerns: usize,
+    #[serde(default)]
+    pub conscience_idle_threshold_secs: Option<u64>,
+    #[serde(default)]
+    pub conscience_dream_threshold_secs: Option<u64>,
+    #[serde(default = "default_perpetuum_review_every_n")]
+    pub review_every_n_checks: u32,
+    #[serde(default)]
+    pub volition_enabled: bool,
+    #[serde(default = "default_perpetuum_volition_interval")]
+    pub volition_interval_secs: u64,
+    #[serde(default = "default_perpetuum_max_actions")]
+    pub volition_max_actions: usize,
+}
+
+impl Default for PerpetualConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timezone: default_perpetuum_timezone(),
+            max_concerns: default_perpetuum_max_concerns(),
+            conscience_idle_threshold_secs: None,
+            conscience_dream_threshold_secs: None,
+            review_every_n_checks: default_perpetuum_review_every_n(),
+            volition_enabled: false,
+            volition_interval_secs: default_perpetuum_volition_interval(),
+            volition_max_actions: default_perpetuum_max_actions(),
+        }
+    }
+}
+
+fn default_perpetuum_timezone() -> String {
+    "UTC".to_string()
+}
+fn default_perpetuum_max_concerns() -> usize {
+    100
+}
+fn default_perpetuum_review_every_n() -> u32 {
+    20
+}
+fn default_perpetuum_volition_interval() -> u64 {
+    900
+}
+fn default_perpetuum_max_actions() -> usize {
+    2
 }
 
 /// Tem Conscious configuration — consciousness observer sub-agent.
@@ -924,6 +982,7 @@ mod tests {
             observability: ObservabilityConfig::default(),
             gaze: GazeConfig::default(),
             consciousness: ConsciousnessConfig::default(),
+            perpetuum: PerpetualConfig::default(),
         };
 
         let toml_str = toml::to_string(&config).unwrap();
