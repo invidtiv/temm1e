@@ -27,6 +27,7 @@ pub use pulse::{Pulse, PulseEvent};
 pub use store::Store;
 pub use types::*;
 
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,7 +63,7 @@ pub struct PerpetualConfig {
 impl Default for PerpetualConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             timezone: default_timezone(),
             max_concerns: default_max_concerns(),
             conscience: ConscienceConfig::default(),
@@ -216,39 +217,70 @@ impl Perpetuum {
         let notifier = self.pulse_notifier.clone();
 
         tokio::spawn(async move {
-            let (pulse, mut pulse_rx) = Pulse::new(store, cancel.clone());
-
-            // Override the notifier (share with the main instance)
-            let _ = pulse.schedule_notifier(); // Internal notifier; main one is separate
-
-            let pulse_cancel = cancel.clone();
-            let pulse_handle = tokio::spawn(async move {
-                pulse.run().await;
-            });
-
-            // Concern dispatch loop
+            // Resilience: restart Pulse + dispatch loop if either panics.
+            // Perpetuum is meant to run 24/7/365 — a single panic must not kill scheduling.
             loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    event = pulse_rx.recv() => {
-                        match event {
-                            Some(PulseEvent::ConcernDue(id)) => {
-                                let cortex = cortex.clone();
-                                tokio::spawn(async move {
-                                    cortex.dispatch(id).await;
-                                });
-                            }
-                            None => break,
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                let (pulse, mut pulse_rx) = Pulse::new(store.clone(), cancel.clone());
+                let pulse_cancel = cancel.clone();
+                let pulse_handle = tokio::spawn({
+                    let pulse = pulse;
+                    async move {
+                        let result = std::panic::AssertUnwindSafe(pulse.run())
+                            .catch_unwind()
+                            .await;
+                        if result.is_err() {
+                            tracing::error!(target: "perpetuum", "Pulse panicked — will restart");
                         }
                     }
-                    _ = notifier.notified() => {
-                        // Schedule changed — pulse will pick it up on next tick
+                });
+
+                // Concern dispatch loop with panic recovery
+                let dispatch_result = std::panic::AssertUnwindSafe(async {
+                    loop {
+                        tokio::select! {
+                            _ = cancel.cancelled() => break,
+                            event = pulse_rx.recv() => {
+                                match event {
+                                    Some(PulseEvent::ConcernDue(id)) => {
+                                        let cortex = cortex.clone();
+                                        tokio::spawn(async move {
+                                            cortex.dispatch(id).await;
+                                        });
+                                    }
+                                    None => {
+                                        tracing::warn!(target: "perpetuum", "Pulse channel closed — restarting");
+                                        break;
+                                    }
+                                }
+                            }
+                            _ = notifier.notified() => {}
+                        }
                     }
+                })
+                .catch_unwind()
+                .await;
+
+                pulse_cancel.cancel();
+                pulse_handle.await.ok();
+
+                if cancel.is_cancelled() {
+                    break;
                 }
+
+                if dispatch_result.is_err() {
+                    tracing::error!(target: "perpetuum", "Dispatch loop panicked — restarting in 5s");
+                } else {
+                    tracing::warn!(target: "perpetuum", "Perpetuum loop exited — restarting in 5s");
+                }
+
+                // Brief pause before restart to avoid tight panic loops
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
 
-            pulse_cancel.cancel();
-            pulse_handle.await.ok();
             tracing::info!(target: "perpetuum", "Perpetuum runtime stopped");
         })
     }
@@ -297,7 +329,7 @@ mod tests {
     #[test]
     fn config_defaults() {
         let config = PerpetualConfig::default();
-        assert!(!config.enabled);
+        assert!(config.enabled); // ON by default
         assert_eq!(config.timezone, "UTC");
         assert_eq!(config.max_concerns, 100);
         assert!(!config.volition.enabled);

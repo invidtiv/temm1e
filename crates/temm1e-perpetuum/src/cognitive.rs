@@ -40,7 +40,15 @@ impl LlmCaller for ProviderCaller {
             system: system.map(String::from),
         };
 
-        let response = self.provider.complete(request).await?;
+        // Timeout: 60s for LLM calls. Prevents Perpetuum from hanging indefinitely
+        // if the provider is unresponsive. The agent loop has its own timeout via
+        // max_task_duration; Perpetuum needs its own since it runs independently.
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.provider.complete(request),
+        )
+        .await
+        .map_err(|_| Temm1eError::Provider("Perpetuum LLM call timed out (60s)".to_string()))??;
         let text = response
             .content
             .iter()

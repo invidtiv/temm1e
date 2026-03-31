@@ -221,7 +221,7 @@ When sufficient training data accumulates, Sleep transitions to Dream: the entit
 
 ## 4. Implementation
 
-Perpetuum is implemented as `temm1e-perpetuum`, a Rust crate within the TEMM1E workspace (15 crates, 1300+ tests). Key implementation details:
+Perpetuum is implemented as `temm1e-perpetuum`, a Rust crate within the TEMM1E workspace (20 crates, 1935 tests). Key implementation details:
 
 **Runtime:** Tokio async runtime. Each concern is a `tokio::spawn`ed task. Concerns are isolated with `catch_unwind` to prevent cascading panics (per TEMM1E's resilience architecture — a prior production incident where a UTF-8 boundary panic killed the entire process).
 
@@ -232,6 +232,8 @@ Perpetuum is implemented as `temm1e-perpetuum`, a Rust crate within the TEMM1E w
 **Integration:** Perpetuum replaces the bare HeartbeatRunner in TEMM1E's main loop. Existing heartbeat configurations are automatically converted to Recurring concerns for backward compatibility. TemporalContext is injected into the system prompt builder in the agent runtime. Monitor tools (create_alarm, create_monitor, etc.) are registered via the existing ToolDeclarations system.
 
 **Observability:** Every concern lifecycle event, state transition, LLM evaluation, and timer firing emits structured tracing spans. This is critical for debugging concurrent behavior and was built before any scheduling logic (Phase 0).
+
+**Resilience (24/7/365 operation):** Perpetuum is designed for indefinite autonomous operation. Key resilience measures: (1) Every concern dispatch is wrapped in `catch_unwind` — a panicking monitor cannot cascade to other concerns or the main agent. (2) LLM calls have 60-second timeouts — a hung provider cannot block Perpetuum indefinitely. (3) The Pulse timer loop auto-restarts on panic with a 5-second backoff — scheduling never permanently dies. (4) Atomic concern claiming (state transition from 'active' to 'firing') prevents duplicate fires from race conditions. (5) Per-concern error budgets disable concerns after 3 consecutive failures. (6) Perpetuum init failure does not crash the main process — Tem continues without scheduling.
 
 ---
 

@@ -73,9 +73,10 @@ pub struct Temm1eConfig {
 }
 
 /// Perpetuum configuration — perpetual time-aware entity framework.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Enabled by default. Set `enabled = false` to opt out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerpetualConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_perpetuum_timezone")]
     pub timezone: String,
@@ -93,6 +94,22 @@ pub struct PerpetualConfig {
     pub volition_interval_secs: u64,
     #[serde(default = "default_perpetuum_max_actions")]
     pub volition_max_actions: usize,
+}
+
+impl Default for PerpetualConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timezone: default_perpetuum_timezone(),
+            max_concerns: default_perpetuum_max_concerns(),
+            conscience_idle_threshold_secs: None,
+            conscience_dream_threshold_secs: None,
+            review_every_n_checks: default_perpetuum_review_every_n(),
+            volition_enabled: false,
+            volition_interval_secs: default_perpetuum_volition_interval(),
+            volition_max_actions: default_perpetuum_max_actions(),
+        }
+    }
 }
 
 fn default_perpetuum_timezone() -> String {
