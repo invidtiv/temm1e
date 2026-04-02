@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.gg/3ux2c5xz"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.1.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-4.1.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever.</h3>
 
 <p align="center">
-  <code>105K lines</code> · <code>1,935 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>20 crates</code> · <code>full computer use</code>
+  <code>105K lines</code> · <code>1,946 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>20 crates</code> · <code>full computer use</code>
 </p>
 
 ---
@@ -644,7 +644,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 1,935 tests
+cargo test --workspace                                               # 1,946 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -658,6 +658,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-02  v4.1.1  ●━━━ Bug fixes — Telegram message splitting at 4096 char limit (#24), OpenAI-compat SSE trailer sanitization (#22), body read retry with HTTP context (#25), Windows auth URL quoting (#20), smart retry skips permanent errors. Environment-independent test fix. 1946 tests.
+                    │
 2026-04-01  v4.1.0  ●━━━ Perpetuum — perpetual time-aware entity framework. Tem becomes always-on: Chronos (temporal cognition injected into every LLM call), Pulse (cron + timer scheduling), Cortex (concern dispatcher with catch_unwind isolation), Conscience (Active/Idle/Sleep/Dream state machine), Cognitive (LLM-powered monitor interpretation + adaptive schedule review), Volition (proactive initiative loop with guardrails). 6 agent tools: create_alarm, create_monitor, create_recurring, list_concerns, cancel_concern, adjust_schedule. Enabling Framework pillar: infrastructure is code, intelligence is LLM. Resilience hardened: 60s LLM timeout, atomic concern claiming, Pulse auto-restart on panic. 20 crates, 1935 tests.
 
 2026-03-29  v4.0.0  ●━━━ Tem Conscious — LLM-powered consciousness layer. Separate observer that thinks before and after every agent turn. Pre-LLM injection of session context + failure warnings. Post-LLM evaluation of turn quality. A/B tested across 6 experiments (340 tests): conscious won 3, unconscious won 1, tied 2. Consciousness ON by default. 19 crates, 1037 tests.

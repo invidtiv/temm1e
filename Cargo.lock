@@ -6866,7 +6866,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6909,7 +6909,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-agent"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -6934,7 +6934,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-automation"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "chrono",
  "temm1e-core",
@@ -6945,7 +6945,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-channels"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6980,7 +6980,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-codex-oauth"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -7001,7 +7001,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-core"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7024,7 +7024,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-distill"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7043,7 +7043,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-filestore"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -7061,7 +7061,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-gateway"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -7088,7 +7088,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-gaze"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -7104,7 +7104,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-hive"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7123,7 +7123,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-mcp"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "dirs",
@@ -7139,7 +7139,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-memory"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7157,7 +7157,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-observable"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "opentelemetry",
@@ -7171,7 +7171,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-perpetuum"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7194,7 +7194,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-providers"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -7210,7 +7210,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-skills"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "dirs",
  "serde",
@@ -7223,7 +7223,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-test-utils"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7238,7 +7238,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-tools"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -7263,7 +7263,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-tui"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7299,7 +7299,7 @@ dependencies = [
 
 [[package]]
 name = "temm1e-vault"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "async-trait",
  "base64",
