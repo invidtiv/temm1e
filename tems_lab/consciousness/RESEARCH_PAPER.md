@@ -2,7 +2,7 @@
 
 > **Authors:** Quan Duong, Tem (TEMM1E Labs)
 > **Date:** March 2026
-> **Status:** Implemented, tested, shipped (v4.0.0). Empirical data from 6 A/B experiments.
+> **Status:** Implemented, tested, shipped (v4.0.0). Updated v4.1.2: budget fix + 54-run v2 validation.
 > **Branch:** `consciousness` (merged to main)
 
 ---
@@ -398,6 +398,28 @@ The N=1 caveat applies to all results. LLM responses are non-deterministic. A pr
 ### 7.6 Conclusion
 
 The consciousness hypothesis is **partially validated.** A separate LLM observer produces measurably better outcomes on 3 of 6 task types, worse on 1, and equivalent on 2. Consciousness is shipped ON by default in TEMM1E v4.0.0 based on the net-positive results across the test suite.
+
+### 7.7 Post-Publication Update (v4.1.2, April 2026)
+
+A budget tracking bug was discovered: both `pre_observe()` and `post_observe()` discarded `response.usage` — consciousness LLM costs were completely invisible to `BudgetTracker`. All cost figures in Sections 7.3-7.5 were understated by the consciousness call overhead. Fix: `ConsciousnessUsage` struct returned from both methods, recorded at all 3 call sites in runtime.
+
+**v2 Validation (54 runs across 13 experiments, N=3 where possible):**
+
+Phase 1 replicated the original 3 experiments (TaskForge, URLForge, DataFlow) with accurate cost tracking. Phase 2 designed 10 new experiments targeting specific theoretical properties: cross-module consistency (CrossRef), spec drift (DriftGuard), implicit contracts (HiddenContract), state machines (StateMaze), minimal specification (MinimalSpec), bug fixing speed (SpeedFix), adversarial test names (TrickyNames), chained calculation (LayeredCalc), protocol sequencing (ProtocolSeq), and trivial tasks (MegaSimple).
+
+**Key findings with corrected budget tracking:**
+
+1. **Real consciousness overhead: -14%** (consciousness is cheaper, not more expensive). The original ~67% estimate was based on uncalibrated projections. With accurate tracking, consciousness makes the agent produce correct code in fewer main-LLM tokens, which more than offsets the observer call costs.
+
+2. **The 30% cost ceiling criterion (Section 5.3) is now MET.** Phase 1 worst case: +12%. Phase 2 average: -14%.
+
+3. **On single-shot code generation, consciousness adds zero accuracy improvement.** All 10 Phase 2 experiments scored 100% on both conscious and unconscious modes across all 54 runs. Modern LLMs (Gemini 3 Flash, as used in all experiments) ace 10-25 test coding tasks without needing an observer.
+
+4. **Consciousness was removed from Chat turns** (v4.1.2). Chat exits via classifier early return before the agent runs. The post_observe insight goes unused. Savings: ~$0.001 and ~2s latency per Chat turn.
+
+5. **Six enhancement options were evaluated** (Adaptive Activation, Retry Loop Detection, Budget-Gated Calls, Tool Call Validation, Context Pressure Relief, Cross-Session Memory). Five were eliminated: retry loop detection already exists (FailureTracker), budget gating has no target (no per-task budgets), context pruning risks deleting needed memory, tool validation adds too much latency, cross-session memory overlaps with lambda-memory. The one viable change (skip Chat turns) was implemented.
+
+Full data: [Experiment Report v2](EXPERIMENT_REPORT_V2.md) | [Enhancement Options](ENHANCEMENT_OPTIONS.md)
 
 ---
 

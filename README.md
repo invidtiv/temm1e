@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.gg/3ux2c5xz"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.1.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-4.1.2-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -346,7 +346,7 @@ User message → CONSCIOUSNESS THINKS (pre-LLM call) → Agent responds → CONS
 - **Post-LLM:** "Was this turn productive? Any patterns to note?" → carries insight to next turn
 - **ON by default** — disable with `[consciousness] enabled = false` in config
 
-**A/B tested across 6 experiments (340 test cases):**
+**A/B tested across 6 experiments (340 test cases) + 10 v2 experiments (54 runs, N=3):**
 
 | Test | Unconscious | Conscious | Winner |
 |------|------------|-----------|--------|
@@ -357,7 +357,7 @@ User message → CONSCIOUSNESS THINKS (pre-LLM call) → Agent responds → CONS
 | MiniLang interpreter (17 tests) | 17/17, $0.046 | 17/17, **$0.009** | **CONSCIOUS** |
 | Multi-tool research (5 sections) | 5/5, $0.025 | 5/5, **$0.006** | **CONSCIOUS** |
 
-**Score: Conscious 3, Unconscious 1, Tie 2.**
+**Score: Conscious 3, Unconscious 1, Tie 2.** v2 follow-up (10 experiments, N=3): consciousness costs **14% less** on average with accurate budget tracking. Chat turns now skip consciousness (zero-cost on chat).
 
 [Research paper →](tems_lab/consciousness/RESEARCH_PAPER.md) · [Experiment report →](tems_lab/consciousness/EXPERIMENT_REPORT.md) · [Blog →](tems_lab/consciousness/BLOG.md) · [Full lab →](tems_lab/consciousness/)
 
@@ -658,6 +658,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-04  v4.1.2  ●━━━ Consciousness revisit — budget tracking fix (consciousness LLM costs were invisible to BudgetTracker), skip consciousness on Chat turns (save ~$0.001 + 2s per chat), v2 experiment report (54 runs across 13 experiments: consciousness 14% cheaper with accurate tracking, 30% cost ceiling criterion now met). 1946 tests.
+                    │
 2026-04-02  v4.1.1  ●━━━ Bug fixes — Telegram message splitting at 4096 char limit (#24), OpenAI-compat SSE trailer sanitization (#22), body read retry with HTTP context (#25), Windows auth URL quoting (#20), smart retry skips permanent errors. Environment-independent test fix. 1946 tests.
                     │
 2026-04-01  v4.1.0  ●━━━ Perpetuum — perpetual time-aware entity framework. Tem becomes always-on: Chronos (temporal cognition injected into every LLM call), Pulse (cron + timer scheduling), Cortex (concern dispatcher with catch_unwind isolation), Conscience (Active/Idle/Sleep/Dream state machine), Cognitive (LLM-powered monitor interpretation + adaptive schedule review), Volition (proactive initiative loop with guardrails). 6 agent tools: create_alarm, create_monitor, create_recurring, list_concerns, cancel_concern, adjust_schedule. Enabling Framework pillar: infrastructure is code, intelligence is LLM. Resilience hardened: 60s LLM timeout, atomic concern claiming, Pulse auto-restart on panic. 20 crates, 1935 tests.

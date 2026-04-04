@@ -4,6 +4,8 @@
 > **Provider:** Gemini (gemini-3-flash-preview)
 > **Budget:** $10 allocated, $0.09 spent
 > **Status:** LLM consciousness VERIFIED. Thinking observer active on every turn.
+>
+> **UPDATE (2026-04-04):** A budget tracking bug was found — consciousness LLM costs were invisible. All cost figures below are understated. See [EXPERIMENT_REPORT_V2.md](EXPERIMENT_REPORT_V2.md) for corrected data (54 runs, accurate tracking, consciousness is 14% cheaper not 67% more expensive).
 
 ---
 
