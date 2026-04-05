@@ -521,7 +521,9 @@ fn extract_sse_event(
                             // Text block start, no content yet
                         }
                         AnthropicContentBlock::Unknown => {
-                            tracing::debug!("Skipping unknown Anthropic content block type in SSE stream");
+                            tracing::debug!(
+                                "Skipping unknown Anthropic content block type in SSE stream"
+                            );
                         }
                     }
                 }
@@ -870,7 +872,11 @@ mod tests {
             .filter_map(convert_anthropic_content)
             .collect();
         assert_eq!(parts.len(), 2);
-        assert!(matches!(&parts[0], ContentPart::Text { text } if text == "I'll look that up for you."));
-        assert!(matches!(&parts[1], ContentPart::ToolUse { id, name, .. } if id == "toolu_01" && name == "search"));
+        assert!(
+            matches!(&parts[0], ContentPart::Text { text } if text == "I'll look that up for you.")
+        );
+        assert!(
+            matches!(&parts[1], ContentPart::ToolUse { id, name, .. } if id == "toolu_01" && name == "search")
+        );
     }
 }
