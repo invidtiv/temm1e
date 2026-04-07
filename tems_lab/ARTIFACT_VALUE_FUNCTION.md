@@ -106,6 +106,32 @@ Eigen-Tune doesn't use time-decay because training data doesn't lose value with 
 
 The drain is quality-competitive eviction. The feedback signal is user behavior (continued, retried, tool success/failure) updating Beta posteriors.
 
+### Tem Anima — User Profile Learning
+
+```
+profile_dimension = old_value * (1 - weight) + eval_value * weight
+
+weight         = evidence_strength * merge_rate
+evidence_strength = confidence * min(1.0, turns_analyzed / 10.0)
+merge_rate     = 0.4 / (1 + 0.1 * eval_count)
+```
+
+Tem Anima profiles users across conversations — communication style, emotional state, personality traits, trust level. Unlike the other subsystems, Anima doesn't produce discrete artifacts. It maintains a **fixed-size profile** that converges toward the user's true preferences through weighted Bayesian updating.
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Confidence decay | 5% per unobserved eval (x0.95) | Dimensions not reinforced fade toward uncertainty |
+| Zero-out threshold | confidence < 0.1 | Below this, dimension is removed from injection |
+| Confidence tiers | 0.3 cosmetic, 0.5 tonal, 0.7 behavioral, 0.8 relational, 0.9 confrontational | Graduated trust — higher confidence unlocks deeper adaptation |
+| Buffer caps | 30 facts, 50 observations, 100 eval logs | Hard limits prevent unbounded storage |
+| Merge rate decay | 0.4 / (1 + 0.1 * eval_count) | Early evaluations have high influence, later ones converge |
+| Adaptive N | 5-30 turns between evals, log growth with stability | Frequent re-eval when behavior shifts, rare when stable |
+| Reset threshold | delta > 0.15 | Behavioral shift resets evaluation frequency to N=5 |
+
+The drain is confidence decay — unobserved dimensions lose 5% confidence per evaluation cycle and zero out below 0.1. The feedback signal is user behavior observed every N turns via background LLM evaluation.
+
+Anima's V(a,t) is implicit: `confidence` IS the quality dimension, `merge_rate` decay IS the recency dimension, and the `adaptive N` scheduling IS the utility signal (frequent evaluation for volatile profiles, rare for stable ones). The fixed-size profile means Anima never grows — it converges.
+
 ## Parameter Design Rationale
 
 ### Half-Lives Are Ordered by Artifact Persistence
@@ -162,6 +188,7 @@ The value function doesn't just score — it creates a **priority queue for cogn
 | Learnings | learning_value() | GC threshold + supersession | Beta priors (feedback loop TBD) |
 | Blueprints | compute_fitness() | Startup GC + forced retirement | Success rate tracking |
 | Eigen-Tune | quality_score | Reservoir eviction | User behavior signals |
+| Tem Anima | confidence (implicit) | 5%/eval confidence decay + buffer caps | Weighted merge from LLM evaluation |
 | Skills | -- | -- (static, filesystem) | -- |
 | Cores | -- | -- (static, filesystem) | -- |
 

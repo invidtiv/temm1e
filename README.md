@@ -18,9 +18,9 @@
   <code>114K lines</code> · <code>2,127 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
 </p>
 
-<p align="center"><strong>Powered by 6 layers of self-learning</strong></p>
+<p align="center"><strong>Powered by 7 layers of self-learning</strong></p>
 <p align="center">
-  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory-1">Memory Dedup</a>
+  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory-1">Memory Dedup</a>
   <br>
   <sub>Every self-learning loop scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
 </p>
@@ -287,6 +287,7 @@ V(a, t) = Q(a) × R(a, t) × U(a)
 | [Cross-Task Learnings](docs/design/SELF_LEARNING_AUDIT.md) | Beta(alpha, beta) posterior | 46 days | Value threshold + supersession |
 | [Blueprints](docs/design/BLUEPRINT_SYSTEM.md) | Wilson lower bound^2 | 139 days | Fitness GC + forced retirement |
 | [Eigen-Tune](tems_lab/eigen/DESIGN.md) | Beta quality score | No decay | Reservoir eviction (5K/tier) |
+| [Tem Anima](tems_lab/social/) | Weighted merge v2 | 5%/eval confidence decay | Buffer caps (30/50/100) + zeroing at <0.1 |
 
 Half-lives are ordered by artifact persistence: **memories < learnings < blueprints**. Specific facts fade fast. Strategic lessons persist longer. Proven procedures persist longest. Eigen-Tune pairs don't decay because training data is cumulative, not episodic.
 
