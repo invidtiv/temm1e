@@ -18,7 +18,7 @@
   <code>114K lines</code> · <code>2,127 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
 </p>
 
-<p align="center"><strong>Powered by 13 layers of self-learning</strong></p>
+<p align="center"><strong>Powered by 13 layers of self-learning mechanism</strong></p>
 <p align="center">
   <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory-1">Memory Dedup</a> · <a href="tems_lab/SELF_LEARNING_V460.md">Core Stats</a> · <a href="tems_lab/SELF_LEARNING_V460.md">Tool Reliability</a> · <a href="tems_lab/SELF_LEARNING_V460.md">Classification Feedback</a> · <a href="tems_lab/SELF_LEARNING_V460.md">Skill Tracking</a> · <a href="tems_lab/SELF_LEARNING_V460.md">Prompt Tier Tracking</a> · <a href="tems_lab/SELF_LEARNING_V460.md">Consciousness Efficacy</a>
   <br>
