@@ -339,16 +339,17 @@ async fn grow_skills(
     );
 
     let response = caller.call(Some(system), &prompt).await?;
-    let trimmed = response.trim();
+    let extracted = extract_json_array(&response);
 
     // Parse the response.
-    let suggestions: Vec<SkillSuggestion> = match serde_json::from_str(trimmed) {
+    let suggestions: Vec<SkillSuggestion> = match serde_json::from_str(extracted) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
                 target: "perpetuum",
                 error = %e,
-                response = %trimmed,
+                response = %response,
+                extracted = %extracted,
                 "Skill grow: failed to parse LLM response, skipping"
             );
             return Ok("Skill grow: LLM response unparseable".to_string());
@@ -460,6 +461,26 @@ struct SkillSuggestion {
     instructions: String,
 }
 
+/// Extract a JSON array from an LLM response that may be wrapped in
+/// markdown code fences or surrounded by prose. Returns the substring
+/// from the first `[` to the matching last `]` if both are present;
+/// otherwise returns the trimmed input.
+///
+/// This handles real-world LLM behavior:
+/// - Plain JSON: `[{"name": ...}]`
+/// - Markdown-fenced: ```` ```json\n[...]\n``` ````
+/// - Prose-wrapped: `Sure, here are the skills:\n[...]\nThat's all.`
+fn extract_json_array(response: &str) -> &str {
+    let trimmed = response.trim();
+    // Find first '[' and last ']'.
+    let start = trimmed.find('[');
+    let end = trimmed.rfind(']');
+    match (start, end) {
+        (Some(s), Some(e)) if e > s => &trimmed[s..=e],
+        _ => trimmed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +513,41 @@ mod tests {
         let result = execute_self_work(&SelfWorkKind::SelfGrowSkills, &store, None).await;
         assert!(result.is_ok());
         assert!(result.unwrap().contains("Skipped"));
+    }
+
+    #[test]
+    fn extract_json_array_plain() {
+        let input = r#"[{"name":"x"}]"#;
+        assert_eq!(extract_json_array(input), input);
+    }
+
+    #[test]
+    fn extract_json_array_markdown_fenced() {
+        let input = "```json\n[{\"name\":\"x\"}]\n```";
+        assert_eq!(extract_json_array(input), r#"[{"name":"x"}]"#);
+    }
+
+    #[test]
+    fn extract_json_array_prose_wrapped() {
+        let input = "Here are the skills:\n[{\"name\":\"x\"}]\nLet me know if you need more.";
+        assert_eq!(extract_json_array(input), r#"[{"name":"x"}]"#);
+    }
+
+    #[test]
+    fn extract_json_array_empty_array() {
+        assert_eq!(extract_json_array("[]"), "[]");
+        assert_eq!(extract_json_array("```\n[]\n```"), "[]");
+    }
+
+    #[test]
+    fn extract_json_array_nested_brackets() {
+        let input = r#"[{"caps":["a","b"]}]"#;
+        assert_eq!(extract_json_array(input), input);
+    }
+
+    #[test]
+    fn extract_json_array_no_brackets_returns_input() {
+        let input = "no json here";
+        assert_eq!(extract_json_array(input), "no json here");
     }
 }

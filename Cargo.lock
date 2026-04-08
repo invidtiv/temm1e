@@ -7230,6 +7230,7 @@ dependencies = [
  "sqlx",
  "temm1e-core",
  "temm1e-observable",
+ "temm1e-providers",
  "temm1e-skills",
  "temm1e-test-utils",
  "temm1e-tools",
