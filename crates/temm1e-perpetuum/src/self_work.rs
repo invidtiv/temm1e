@@ -367,10 +367,17 @@ async fn grow_skills(
     }
 
     // Write each skill to ~/.temm1e/skills/self-grow-<name>.md
-    let skills_dir = match dirs::home_dir() {
-        Some(home) => home.join(".temm1e").join("skills"),
-        None => {
-            return Ok("Skill grow: cannot resolve home directory".to_string());
+    // Test override: set TEMM1E_SELF_GROW_SKILLS_DIR to redirect skill output
+    // to a controlled directory. Production never sets this and uses
+    // ~/.temm1e/skills/.
+    let skills_dir = if let Ok(override_path) = std::env::var("TEMM1E_SELF_GROW_SKILLS_DIR") {
+        std::path::PathBuf::from(override_path)
+    } else {
+        match dirs::home_dir() {
+            Some(home) => home.join(".temm1e").join("skills"),
+            None => {
+                return Ok("Skill grow: cannot resolve home directory".to_string());
+            }
         }
     };
 
