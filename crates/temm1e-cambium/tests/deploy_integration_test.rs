@@ -11,9 +11,32 @@ use temm1e_cambium::deploy::{DeployConfig, DeployOutcome, Deployer};
 use tempfile::tempdir;
 use tokio::process::Command;
 
+/// Write a fake binary to `path`, setting it executable on Unix.
+///
+/// Uses **synchronous** `std::fs` + explicit `sync_all` to defeat a Linux
+/// ETXTBSY race: `tokio::fs::write` runs the underlying `close(2)` on a
+/// blocking-pool thread, and on Linux the subsequent `exec(2)` from the
+/// test can briefly observe an open write fd (errno 26, "Text file busy").
+/// Doing the open/write/sync/close fully on the current thread before
+/// returning eliminates the cross-thread window.
+fn write_executable_script(path: &Path, script: &str) {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    f.sync_all().unwrap();
+    drop(f);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+}
+
 /// Write a small shell-script binary that responds to --version, then
 /// sleeps for `sleep_secs` if invoked with "start".
-async fn write_fake_temm1e(path: &Path, version: &str, sleep_secs: u64) {
+fn write_fake_temm1e(path: &Path, version: &str, sleep_secs: u64) {
     let script = format!(
         "#!/bin/sh\n\
          if [ \"$1\" = \"--version\" ]; then\n\
@@ -25,18 +48,11 @@ async fn write_fake_temm1e(path: &Path, version: &str, sleep_secs: u64) {
          fi\n\
          exit 0\n"
     );
-    tokio::fs::write(path, script).await.unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
-    }
+    write_executable_script(path, &script);
 }
 
 /// Write a binary that crashes immediately on `start`.
-async fn write_crashing_temm1e(path: &Path) {
+fn write_crashing_temm1e(path: &Path) {
     let script = "#!/bin/sh\n\
          if [ \"$1\" = \"--version\" ]; then\n\
            echo 'temm1e crash 1.0.0'\n\
@@ -46,32 +62,18 @@ async fn write_crashing_temm1e(path: &Path) {
            exit 1\n\
          fi\n\
          exit 0\n";
-    tokio::fs::write(path, script).await.unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
-    }
+    write_executable_script(path, script);
 }
 
 /// Write a binary that fails the --version check.
-async fn write_broken_version_temm1e(path: &Path) {
+fn write_broken_version_temm1e(path: &Path) {
     let script = "#!/bin/sh\n\
          if [ \"$1\" = \"--version\" ]; then\n\
            echo 'crash on version' >&2\n\
            exit 1\n\
          fi\n\
          exit 0\n";
-    tokio::fs::write(path, script).await.unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
-    }
+    write_executable_script(path, script);
 }
 
 #[tokio::test]
@@ -89,8 +91,8 @@ async fn deploy_swap_replaces_old_binary_with_new() {
         .await
         .unwrap();
 
-    write_fake_temm1e(&installed, "1.0.0", 60).await;
-    write_fake_temm1e(&new, "2.0.0", 60).await;
+    write_fake_temm1e(&installed, "1.0.0", 60);
+    write_fake_temm1e(&new, "2.0.0", 60);
 
     let config = DeployConfig {
         installed_binary: installed.clone(),
@@ -141,8 +143,8 @@ async fn deploy_swap_aborts_on_broken_version() {
         .await
         .unwrap();
 
-    write_fake_temm1e(&installed, "1.0.0", 60).await;
-    write_broken_version_temm1e(&new).await;
+    write_fake_temm1e(&installed, "1.0.0", 60);
+    write_broken_version_temm1e(&new);
 
     let config = DeployConfig {
         installed_binary: installed.clone(),
@@ -186,8 +188,8 @@ async fn deploy_swap_with_pid_file_starts_new_process() {
         .unwrap();
 
     // Write old binary that sleeps long enough for the test
-    write_fake_temm1e(&installed, "1.0.0", 30).await;
-    write_fake_temm1e(&new, "2.0.0", 30).await;
+    write_fake_temm1e(&installed, "1.0.0", 30);
+    write_fake_temm1e(&new, "2.0.0", 30);
 
     // Pretend the old binary is "running" — start it ourselves and write its PID.
     let child = std::process::Command::new(&installed)
@@ -245,9 +247,9 @@ async fn deploy_swap_rollback_on_failed_start() {
         .await
         .unwrap();
 
-    write_fake_temm1e(&installed, "1.0.0", 30).await;
+    write_fake_temm1e(&installed, "1.0.0", 30);
     // New binary passes --version but crashes on start.
-    write_crashing_temm1e(&new).await;
+    write_crashing_temm1e(&new);
 
     // No running process for this test — we want to focus on the
     // start-then-crash detection.
