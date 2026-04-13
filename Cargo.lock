@@ -7458,6 +7458,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "temm1e-witness"
+version = "5.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "glob",
+ "hex",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "temm1e-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
