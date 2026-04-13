@@ -347,3 +347,96 @@ The runtime integration hook (Phase 2) is ready to begin when the user gives the
 The docs, the research paper, the implementation spec, and the experiment report are all in `tems_lab/witness/`. The branch is pushed to `origin/verification-system`.
 
 **Recommendation:** review this report, then decide whether to proceed to Phase 2 (runtime hook + Tier 1 aspect verifier) or ship Phase 1 as-is to harvest the value from standalone verification workflows (CI gates, post-commit audits, Cambium pipeline stages).
+
+---
+
+## 11. Phase 2 Addendum
+
+**Date:** 2026-04-13 (same day as Phase 1)
+**Commits:** `b6378fa` — runtime hook, Tier 1 verifier, trust wiring, planner helper, extended red-team catalog
+
+Phase 2 landed in a single commit after Phase 1. Every deliverable from §8 "Phase 2 Recommendations" except the full Cambium runtime wiring is now shipped and tested.
+
+### 11.1 Phase 2 deliverables
+
+| Item | Status | Notes |
+|---|---|---|
+| P2.1 Runtime hook (`runtime.rs:1862`) | ✅ | `AgentRuntime::with_witness(witness, strictness, show_readout)` builder + gate that looks up the most recent sealed `Oath` per session via new `Witness::active_oath()` and rewrites `reply_text` via `compose_final_reply_ex()`. Law 5 enforced: any lookup/verification/composition error leaves `reply_text` untouched. |
+| P2.2 Tier 1 aspect verifier | ✅ | `Tier1Verifier` trait + `ProviderTier1Verifier` default impl. Clean-slate context, structured JSON output (`{"verdict": "pass"\|"fail", "reason": "..."}`), static cached system prompt, `temperature=0.0`, `max_tokens=200`. Same-model policy preserved. `parse_tier1_response` tolerates markdown fences and trailing prose. |
+| P2.3 Cambium `TrustEngine::record_verdict` | ✅ | Plain-bool signature — `record_verdict(passed: bool, level: TrustLevel)`. Keeps cambium free of a witness dep. Inconclusive verdicts deliberately not routed through this method. Four new unit tests prove graduation from `record_verdict(true)` calls. |
+| P2.4 Per-task readout | ✅ | `compose_final_reply_ex(..., show_readout: bool)` appends a one-line summary `─── Witness: 4/5 PASS (1 FAIL). Cost: $0.0123. Latency: +2ms. Tiers: T0×3 T1×1. ───` regardless of strictness. Users see verdicts in observe mode without being blocked. |
+| P2.5 Planner Oath generation helper | ✅ | New `planner.rs` module with `OATH_GENERATION_PROMPT` (static system prompt encoding the Law 1 rigor rules + JSON schema), `PlannerOathDraft`, `parse_planner_oath`, `oath_from_draft`, `build_planner_user_prompt`. Standalone — actual Planner integration is a small Phase 2.5 follow-up. |
+| P3 Extended red-team catalog | ✅ | New `tests/redteam_advanced.rs` with 9 sophisticated-pathology tests: sandbagging (marker + unmarked), goal-guarding (hidden side-task file), CoT-resistant symbol mismatch, evaluation-awareness (honest + deceptive variants), evidence fabrication (empty + junk-size), diff-shape predicate shape check. |
+
+### 11.2 Phase 2 test totals
+
+| Crate | Tests | Delta vs Phase 1 |
+|---|---|---|
+| temm1e-witness | 120 | +27 (11 new lib: Tier 1/active_oath/readout/parse; 7 new planner; 9 new redteam_advanced) |
+| temm1e-agent | 747 | +1 (runtime_with_witness_builder) |
+| temm1e-cambium | 133 | +4 (record_verdict tests) |
+| temm1e-watchdog | 15 | 0 |
+| **Total (modified crates)** | **1015** | **+32** |
+
+Full workspace test summary:
+- 716 + 133 + 87 + 16 + 9 + 8 + 15 + 9 + (smaller test files) = every single test passing, zero regressions.
+- `cargo check --workspace` ✓
+- `cargo clippy --all-targets -- -D warnings` ✓
+- `cargo fmt --check` ✓
+
+### 11.3 Phase 2 A/B bench confirmation
+
+The 500-trajectory bench was re-run against Phase 2 code to confirm the headline numbers still hold:
+
+| Metric | Phase 1 | Phase 2 |
+|---|---|---|
+| Witness detection rate | 100.0% | **100.0%** |
+| Witness false-positive rate | 0.0% | **0.0%** |
+| Baseline detection rate | 0.0% | **0.0%** |
+| Avg latency per task | <1 ms | **<1 ms** |
+| Avg LLM cost per task | $0.00 | **$0.00** |
+
+Phase 2 added LLM-based Tier 1 infrastructure but the A/B bench uses Tier-0-only Oaths (same as Phase 1), so the cost remains zero. The Tier 1 code path is exercised by unit tests with a `MockTier1` verifier, not by the bench.
+
+### 11.4 What Phase 2 adds beyond Phase 1 detection
+
+Phase 1 proved Witness catches the four common code-task pathologies (Fiction, Stub-Wire, Unwired, Handwave) at 100% with zero overhead. Phase 2 adds:
+
+1. **Runtime path.** Witness now runs inline in the agent's final-reply construction. A session with a sealed Oath gets its final reply rewritten automatically. A session without a sealed Oath is a no-op — the gate is transparent.
+
+2. **Sophisticated pathology coverage.** The extended red-team catalog demonstrates Witness catches:
+   - **Sandbagging** — deliberate deliver-less-than-capable patterns, via anti-stub markers and "expected behavior present" predicates.
+   - **Goal-guarding** — hidden side-task files, via `FileAbsent` on paths outside scope.
+   - **CoT-resistant lying** — agent's claimed plan doesn't match filesystem state, via `FileContains` with symbol-name regexes.
+   - **Evaluation-awareness** — Witness doesn't care what the agent "thinks" about being watched; deterministic verification is state-of-the-world.
+   - **Evidence fabrication** — empty or junk files named like the target, via `FileSizeInRange` + `FileContains` combinations.
+
+3. **Single-model Tier 1 LLM verifier.** Subjective predicates that can't be reduced to Tier 0 (e.g., "is this test meaningful?") can now be routed to a clean-slate LLM call using the agent's own Provider. Structured JSON output, binary pass/fail, temperature 0. The Tier 2 adversarial auditor remains stubbed as Inconclusive — Phase 3.
+
+4. **Evidence-bound trust.** `TrustEngine::record_verdict` lets Cambium's autonomy levels be earned from Witness verdicts. Wiring the runtime to actually call this method is a small Phase 2.5 follow-up (requires AgentRuntime to hold a TrustEngine reference — a separate architectural decision).
+
+5. **Planner integration readiness.** The `OATH_GENERATION_PROMPT` + draft parser + `oath_from_draft` helpers are the full API the Planner needs to start emitting Oaths during classification. Actually invoking them from the classifier path is small.
+
+### 11.5 What's still deferred (honest scope note)
+
+1. **Full runtime → TrustEngine wiring** — AgentRuntime doesn't hold a TrustEngine today. Adding one requires a separate plumbing decision and crosses into the Cambium integration surface. Phase 2 emits a `tracing::info!` event with verdict outcome/pass/fail so observability subscribers can call `record_verdict` downstream.
+2. **Planner Oath generation wired into classification** — the helpers exist, the prompt exists, but the classifier doesn't call them yet. A small follow-up.
+3. **Tier 2 adversarial auditor** — stubbed as Inconclusive for any advisory predicate that reaches Tier 2. Will need a stronger-adversarial prompt variant + parity with Tier 1 routing.
+4. **Subtask-graph integration** — still Phase 3+ per `IMPLEMENTATION_DETAILS.md §15`. Witness operates on Root Oath only; the existing `SubTaskStatus` enum in `task_decomposition.rs` is untouched (additive-only policy).
+5. **HonestBench** — proposed in §11.6 of the research paper. Not started.
+6. **Real-workload measurement** — the A/B bench uses deterministic simulated agents. The runtime hook is in place but we haven't yet measured Phase 2 behavior against live LLM-driven sessions. The Phase 2 integration tests prove the builder + gate work; the empirical question "does inline Witness cut hallucination in real traffic?" is the first Phase 3 experiment.
+
+### 11.6 Sign-off
+
+**Phase 1 + Phase 2 are complete, tested, and green.** 1015 tests across four modified crates, zero failures, zero regressions, zero new external dependencies for the watchdog (still clap-only), and the runtime hook is behind an opt-in builder that defaults to no-op behavior for existing callers.
+
+The branch `verification-system` has 5 commits:
+
+1. `cfd14db` — research paper + implementation details
+2. `9ccc38e` — Phase 1 core crate (types, predicates, ledger, oath, witness)
+3. `4ce755c` — watchdog file-based Root Anchor
+4. `400cae6` — Five Laws property tests, red-team Oaths, agent integration
+5. `48ae800` — E2E demo, A/B bench, experiment report
+6. `b6378fa` — **Phase 2**: runtime hook, Tier 1, trust wiring, planner helper, extended red-team
+
+All pushed to `origin/verification-system`. Ready for review, merge, or to start the Phase 2.5 / Phase 3 follow-ups.
