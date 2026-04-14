@@ -55,9 +55,18 @@ pub async fn spawn_agent(
     // 1. Create provider
     let (all_keys, saved_base_url) = credentials::load_active_provider_keys()
         .map(|(_, keys, _, burl)| {
+            // Proxy providers use lenient placeholder check so short LM Studio /
+            // Ollama keys survive TUI agent spawn.
+            let has_custom = burl.is_some();
             let valid: Vec<String> = keys
                 .into_iter()
-                .filter(|k| !credentials::is_placeholder_key(k))
+                .filter(|k| {
+                    if has_custom {
+                        !credentials::is_placeholder_key_lenient(k)
+                    } else {
+                        !credentials::is_placeholder_key(k)
+                    }
+                })
                 .collect();
             (valid, burl)
         })
@@ -297,6 +306,17 @@ pub async fn validate_provider_key(
 
     let provider = temm1e_providers::create_provider(&config)
         .map_err(|e| format!("Failed to create provider: {}", e))?;
+
+    // Custom endpoint — skip test completion.
+    // See src/main.rs::validate_provider_key for full rationale.
+    if base_url.is_some() {
+        tracing::debug!(
+            base_url = ?base_url,
+            model = %model,
+            "Skipping TUI validate_provider_key test call — custom base_url set"
+        );
+        return Ok(());
+    }
 
     let test_req = temm1e_core::types::message::CompletionRequest {
         model: model.to_string(),

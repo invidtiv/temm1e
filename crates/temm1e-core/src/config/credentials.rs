@@ -48,6 +48,12 @@ pub struct DetectedCredential {
     pub provider: &'static str,
     pub api_key: String,
     pub base_url: Option<String>,
+    /// User-specified model name for proxy flows (e.g. `model:qwen3-coder`).
+    /// Populated only by `parse_proxy_config` when the user explicitly passes
+    /// a `model:` / `m:` / `default_model:` k/v pair. Raw-paste auto-detect
+    /// paths always leave this `None` so the onboarding flow falls back to
+    /// the provider's hardcoded default via `default_model()`.
+    pub model: Option<String>,
 }
 
 // ── Path Helpers ────────────────────────────────────────────────────
@@ -100,6 +106,60 @@ pub fn is_placeholder_key(key: &str) -> bool {
     false
 }
 
+/// Lenient placeholder check for custom-endpoint providers (proxy / `base_url` set).
+///
+/// LM Studio, Ollama, vLLM and other local inference servers ignore the API key
+/// entirely. Users routinely set keys shorter than 10 chars (e.g. `sk-lm-xxx`,
+/// `lm-studio`, or even a single character). Strict mode wrongly rejects these
+/// because its 10-char minimum was designed for first-party providers.
+///
+/// Lenient mode removes ONLY the length gate — every other protection from
+/// strict mode is preserved:
+/// - empty / whitespace-only keys → rejected
+/// - known copy-paste markers (`YOUR_API_KEY`, `paste_your_key`, …) → rejected
+/// - all-same-char padding (`aaaa`, `0000`) → rejected
+///
+/// Callers MUST gate lenient vs strict on `base_url.is_some()`. Raw-paste
+/// auto-detect paths (no `proxy` keyword, no custom base_url) must keep using
+/// strict `is_placeholder_key` — the 10-char guard still earns its keep there.
+pub fn is_placeholder_key_lenient(key: &str) -> bool {
+    let k = key.trim().to_lowercase();
+    if k.is_empty() {
+        return true;
+    }
+    let placeholders = [
+        "paste_your",
+        "your_key",
+        "your_api",
+        "your-key",
+        "your-api",
+        "insert_your",
+        "insert-your",
+        "put_your",
+        "put-your",
+        "replace_with",
+        "replace-with",
+        "enter_your",
+        "enter-your",
+        "placeholder",
+        "xxxxxxxx",
+        "your_token",
+        "your-token",
+        "_here",
+    ];
+    for p in &placeholders {
+        if k.contains(p) {
+            return true;
+        }
+    }
+    // All-same-char padding — lenient keeps this guard but at a lower length
+    // threshold (4) since strict mode's 10-char gate is removed entirely.
+    if k.len() >= 4 && k.chars().all(|c| c == k.chars().next().unwrap_or('a')) {
+        return true;
+    }
+    false
+}
+
 // ── Provider Name Normalization ─────────────────────────────────────
 
 /// Normalize provider name string to a static str.
@@ -133,7 +193,15 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
     if lower.starts_with("proxy") {
         let result = parse_proxy_config(trimmed);
         if let Some(ref cred) = result {
-            if is_placeholder_key(&cred.api_key) {
+            // Proxy keys use lenient mode — LM Studio / Ollama / vLLM users
+            // legitimately use short keys. Empty, whitespace, copy-paste
+            // markers, and padding are still rejected.
+            let is_placeholder = if cred.base_url.is_some() {
+                is_placeholder_key_lenient(&cred.api_key)
+            } else {
+                is_placeholder_key(&cred.api_key)
+            };
+            if is_placeholder {
                 return None;
             }
         }
@@ -164,6 +232,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
                             },
                             api_key: key.to_string(),
                             base_url: None,
+                            model: None,
                         });
                     }
                 }
@@ -181,6 +250,7 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
             provider: "github",
             api_key: trimmed.to_string(),
             base_url: None,
+            model: None,
         });
     }
     if trimmed.starts_with("sk-ant-") {
@@ -188,30 +258,35 @@ pub fn detect_api_key(text: &str) -> Option<DetectedCredential> {
             provider: "anthropic",
             api_key: trimmed.to_string(),
             base_url: None,
+            model: None,
         })
     } else if trimmed.starts_with("sk-or-") {
         Some(DetectedCredential {
             provider: "openrouter",
             api_key: trimmed.to_string(),
             base_url: None,
+            model: None,
         })
     } else if trimmed.starts_with("xai-") {
         Some(DetectedCredential {
             provider: "grok",
             api_key: trimmed.to_string(),
             base_url: None,
+            model: None,
         })
     } else if trimmed.starts_with("sk-") {
         Some(DetectedCredential {
             provider: "openai",
             api_key: trimmed.to_string(),
             base_url: None,
+            model: None,
         })
     } else if trimmed.starts_with("AIzaSy") {
         Some(DetectedCredential {
             provider: "gemini",
             api_key: trimmed.to_string(),
             base_url: None,
+            model: None,
         })
     } else {
         None
@@ -228,6 +303,7 @@ fn parse_proxy_config(text: &str) -> Option<DetectedCredential> {
     let mut provider: Option<&'static str> = None;
     let mut base_url: Option<String> = None;
     let mut api_key: Option<String> = None;
+    let mut model: Option<String> = None;
 
     let mut i = 1;
     while i < tokens.len() {
@@ -245,6 +321,13 @@ fn parse_proxy_config(text: &str) -> Option<DetectedCredential> {
                 }
                 "key" | "api_key" | "apikey" | "token" => {
                     api_key = Some(v.to_string());
+                }
+                "model" | "m" | "default_model" => {
+                    // User-specified model for proxy/custom endpoints
+                    // (e.g. `model:qwen3-coder-30b-a3b`). Skipping validation
+                    // at the onboarding step means this value flows directly
+                    // into the agent config without a provider round-trip.
+                    model = Some(v.to_string());
                 }
                 _ => {
                     if v.starts_with("//") || v.starts_with("http") {
@@ -273,6 +356,7 @@ fn parse_proxy_config(text: &str) -> Option<DetectedCredential> {
         provider,
         api_key,
         base_url,
+        model,
     })
 }
 
@@ -360,6 +444,9 @@ pub async fn save_credentials(
 /// Load the active provider's credentials.
 /// Returns `(provider_name, api_key, model)`.
 /// Filters out placeholder/dummy keys.
+///
+/// Uses lenient-mode placeholder check when `provider.base_url.is_some()` so
+/// that custom endpoints (LM Studio, Ollama, vLLM, …) can use short keys.
 pub fn load_saved_credentials() -> Option<(String, String, String)> {
     let creds = load_credentials_file()?;
     let provider = creds
@@ -367,10 +454,17 @@ pub fn load_saved_credentials() -> Option<(String, String, String)> {
         .iter()
         .find(|p| p.name == creds.active)
         .or_else(|| creds.providers.first())?;
+    let has_custom_endpoint = provider.base_url.is_some();
     let first_valid_key = provider
         .keys
         .iter()
-        .find(|k| !is_placeholder_key(k))?
+        .find(|k| {
+            if has_custom_endpoint {
+                !is_placeholder_key_lenient(k)
+            } else {
+                !is_placeholder_key(k)
+            }
+        })?
         .clone();
     if provider.name.is_empty() || first_valid_key.is_empty() {
         return None;
@@ -385,6 +479,9 @@ pub fn load_saved_credentials() -> Option<(String, String, String)> {
 /// Load all keys for the active provider.
 /// Returns `(name, keys, model, base_url)`.
 /// Filters out placeholder/dummy keys.
+///
+/// Uses lenient-mode placeholder check when `provider.base_url.is_some()` so
+/// that custom endpoints (LM Studio, Ollama, vLLM, …) can use short keys.
 pub fn load_active_provider_keys() -> Option<(String, Vec<String>, String, Option<String>)> {
     let creds = load_credentials_file()?;
     let provider = creds
@@ -392,10 +489,17 @@ pub fn load_active_provider_keys() -> Option<(String, Vec<String>, String, Optio
         .iter()
         .find(|p| p.name == creds.active)
         .or_else(|| creds.providers.first())?;
+    let has_custom_endpoint = provider.base_url.is_some();
     let valid_keys: Vec<String> = provider
         .keys
         .iter()
-        .filter(|k| !is_placeholder_key(k))
+        .filter(|k| {
+            if has_custom_endpoint {
+                !is_placeholder_key_lenient(k)
+            } else {
+                !is_placeholder_key(k)
+            }
+        })
         .cloned()
         .collect();
     if provider.name.is_empty() || valid_keys.is_empty() {
@@ -511,5 +615,195 @@ mod tests {
         assert_eq!(normalize_provider_name("glm"), Some("zai"));
         assert_eq!(normalize_provider_name("ollama"), Some("ollama"));
         assert_eq!(normalize_provider_name("unknown"), None);
+    }
+
+    // ── is_placeholder_key_lenient (Bug 1 fix — temm1e-labs/temm1e#44) ───
+
+    #[test]
+    fn lenient_mode_accepts_short_proxy_keys() {
+        // The exact literal from bug #44 — 9 chars
+        assert!(!is_placeholder_key_lenient("sk-lm-xxx"));
+        // Common LM Studio / Ollama convention
+        assert!(!is_placeholder_key_lenient("lm-studio"));
+        assert!(!is_placeholder_key_lenient("ollama"));
+        // Real-world short proxy keys
+        assert!(!is_placeholder_key_lenient("token-xyz"));
+        assert!(!is_placeholder_key_lenient("abc123"));
+        // Edge case: single char
+        assert!(!is_placeholder_key_lenient("x"));
+    }
+
+    #[test]
+    fn lenient_mode_rejects_empty_and_whitespace() {
+        assert!(is_placeholder_key_lenient(""));
+        assert!(is_placeholder_key_lenient("   "));
+        assert!(is_placeholder_key_lenient("\t"));
+        assert!(is_placeholder_key_lenient("\n"));
+        assert!(is_placeholder_key_lenient("\t\n "));
+    }
+
+    #[test]
+    fn lenient_mode_still_rejects_copy_paste_markers() {
+        // Even proxy users can fat-finger a copy-paste placeholder —
+        // lenient mode still catches them.
+        assert!(is_placeholder_key_lenient("YOUR_API_KEY"));
+        assert!(is_placeholder_key_lenient("YOUR_API_KEY_HERE"));
+        assert!(is_placeholder_key_lenient("paste_your_key_here"));
+        assert!(is_placeholder_key_lenient("insert_your_api_key"));
+        assert!(is_placeholder_key_lenient("replace_with_key"));
+        assert!(is_placeholder_key_lenient("put_your_key_here"));
+        assert!(is_placeholder_key_lenient("enter_your_key"));
+        assert!(is_placeholder_key_lenient("placeholder"));
+        assert!(is_placeholder_key_lenient("xxxxxxxx"));
+        assert!(is_placeholder_key_lenient("your_token"));
+        assert!(is_placeholder_key_lenient("api_key_here"));
+    }
+
+    #[test]
+    fn lenient_mode_still_rejects_all_same_char_padding() {
+        // Short padding
+        assert!(is_placeholder_key_lenient("aaaa"));
+        assert!(is_placeholder_key_lenient("0000"));
+        assert!(is_placeholder_key_lenient("xxxx"));
+        // Longer padding (also caught by strict mode)
+        assert!(is_placeholder_key_lenient("aaaaaaaaaa"));
+    }
+
+    #[test]
+    fn lenient_mode_allows_mixed_short_patterns() {
+        // 3-char all-same-char is NOT blocked (too short to be useful padding
+        // detection, and legitimate tokens can look anything). This is a
+        // deliberate trade-off — the length floor for padding detection is 4.
+        assert!(!is_placeholder_key_lenient("abc"));
+        assert!(!is_placeholder_key_lenient("a1b"));
+    }
+
+    #[test]
+    fn strict_mode_byte_identical_for_long_keys() {
+        // Regression guard: strict mode behavior must NOT change for long keys.
+        // Every caller that stays on strict mode sees identical behavior.
+        assert!(!is_placeholder_key("sk-ant-api03-realkey1234567890"));
+        assert!(!is_placeholder_key("sk-proj-realkey1234567890abcdef"));
+        assert!(is_placeholder_key("short")); // still rejected
+        assert!(is_placeholder_key("sk-lm-xxx")); // 9 chars still rejected in strict
+    }
+
+    // ── detect_api_key proxy flow with lenient mode ──────────────────────
+
+    #[test]
+    fn detect_proxy_accepts_short_key_with_base_url() {
+        // Reproduces the exact input from temm1e-labs/temm1e#44
+        let cred = detect_api_key("proxy openai http://100.100.1.251:1234/v1 sk-lm-xxx").unwrap();
+        assert_eq!(cred.provider, "openai");
+        assert_eq!(cred.api_key, "sk-lm-xxx");
+        assert_eq!(
+            cred.base_url.as_deref(),
+            Some("http://100.100.1.251:1234/v1")
+        );
+    }
+
+    #[test]
+    fn detect_proxy_accepts_lm_studio_style_key() {
+        let cred = detect_api_key("proxy openai http://localhost:1234/v1 lm-studio").unwrap();
+        assert_eq!(cred.api_key, "lm-studio");
+        assert_eq!(cred.base_url.as_deref(), Some("http://localhost:1234/v1"));
+    }
+
+    #[test]
+    fn detect_proxy_rejects_empty_key_even_with_base_url() {
+        // Parser would need a key token — empty string isn't reachable via the
+        // whitespace-split path, but the k:v form can synthesize one.
+        assert!(detect_api_key("proxy openai url:http://localhost:1234/v1 key:").is_none());
+    }
+
+    #[test]
+    fn detect_proxy_rejects_copy_paste_marker_even_with_base_url() {
+        // Lenient mode still catches obvious placeholder markers.
+        assert!(detect_api_key("proxy openai http://localhost:1234/v1 YOUR_API_KEY").is_none());
+        assert!(
+            detect_api_key("proxy openai http://localhost:1234/v1 paste_your_key_here").is_none()
+        );
+    }
+
+    #[test]
+    fn detect_raw_paste_still_rejects_short_key_without_proxy_keyword() {
+        // Strict mode still applies when there's no `proxy` keyword — the
+        // copy-paste guard earns its keep on the raw-paste auto-detect path.
+        assert!(detect_api_key("sk-lm-xxx").is_none());
+        assert!(detect_api_key("short").is_none());
+        assert!(detect_api_key("lm-studio").is_none());
+    }
+
+    // ── Q2: proxy `model:` parameter (temm1e-labs/temm1e#44 Phase 2) ─────
+
+    #[test]
+    fn parse_proxy_config_with_model_kv() {
+        let cred = detect_api_key(
+            "proxy openai http://localhost:1234/v1 sk-lm-xxx model:qwen3-coder-30b-a3b",
+        )
+        .unwrap();
+        assert_eq!(cred.provider, "openai");
+        assert_eq!(cred.api_key, "sk-lm-xxx");
+        assert_eq!(cred.base_url.as_deref(), Some("http://localhost:1234/v1"));
+        assert_eq!(cred.model.as_deref(), Some("qwen3-coder-30b-a3b"));
+    }
+
+    #[test]
+    fn parse_proxy_config_with_m_shorthand() {
+        let cred =
+            detect_api_key("proxy m:llama-3.3 url:http://localhost:11434/v1 key:ollama").unwrap();
+        assert_eq!(cred.model.as_deref(), Some("llama-3.3"));
+        assert_eq!(cred.base_url.as_deref(), Some("http://localhost:11434/v1"));
+        assert_eq!(cred.api_key, "ollama");
+    }
+
+    #[test]
+    fn parse_proxy_config_with_default_model_alias() {
+        let cred = detect_api_key("proxy openai http://lm/v1 sk-lm-xxx default_model:qwen3-coder")
+            .unwrap();
+        assert_eq!(cred.model.as_deref(), Some("qwen3-coder"));
+    }
+
+    #[test]
+    fn parse_proxy_config_model_is_optional() {
+        // Legacy call without model: still works — cred.model == None means
+        // the onboarding flow falls back to default_model(provider).
+        let cred = detect_api_key("proxy openai http://localhost:1234/v1 sk-lm-xxx").unwrap();
+        assert!(cred.model.is_none(), "no model: key means None");
+        assert_eq!(cred.api_key, "sk-lm-xxx");
+    }
+
+    #[test]
+    fn raw_paste_leaves_model_none() {
+        // Auto-detect paths (no proxy keyword) never populate model — they
+        // always fall through to default_model(provider) in onboarding.
+        let cred = detect_api_key("sk-ant-api03-realkey1234567890").unwrap();
+        assert!(cred.model.is_none());
+
+        let cred = detect_api_key("sk-proj-abc123def456ghi789").unwrap();
+        assert!(cred.model.is_none());
+
+        let cred = detect_api_key("AIzaSyABCDEF1234567890").unwrap();
+        assert!(cred.model.is_none());
+
+        let cred = detect_api_key("xai-abc123def456").unwrap();
+        assert!(cred.model.is_none());
+    }
+
+    #[test]
+    fn parse_proxy_config_model_field_is_first_class_for_bug_44_input() {
+        // Reproduces the exact input the user would type in the fixed workflow
+        // for temm1e-labs/temm1e#44.
+        let cred = detect_api_key(
+            "proxy openai http://100.100.1.251:1234/v1 sk-lm-xxx model:qwen3-coder-30b-a3b",
+        )
+        .unwrap();
+        assert_eq!(cred.provider, "openai");
+        assert_eq!(cred.api_key, "sk-lm-xxx");
+        assert_eq!(
+            cred.base_url.as_deref(),
+            Some("http://100.100.1.251:1234/v1")
+        );
+        assert_eq!(cred.model.as_deref(), Some("qwen3-coder-30b-a3b"));
     }
 }

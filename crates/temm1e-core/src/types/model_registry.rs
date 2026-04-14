@@ -53,6 +53,21 @@ pub fn get_model_limits(model: &str) -> ModelLimits {
         .unwrap_or(DEFAULT_LIMITS)
 }
 
+/// Look up limits with custom-model awareness.
+///
+/// Tries the active provider's custom models first (from
+/// `~/.temm1e/custom_models.toml`), then falls back to the hardcoded
+/// registry via [`model_limits`]. This wrapper is opt-in: existing callers
+/// that don't know the active provider keep using [`model_limits`] and see
+/// byte-identical behavior. Only callers that know the provider context
+/// (e.g. main.rs at agent-init time) should call this variant.
+pub fn model_limits_with_custom(provider: &str, model: &str) -> (usize, usize) {
+    if let Some(cm) = crate::config::custom_models::lookup_custom_model(provider, model) {
+        return (cm.context_window, cm.max_output_tokens);
+    }
+    model_limits(model)
+}
+
 fn lookup(model: &str) -> Option<ModelLimits> {
     Some(match model {
         // ── Anthropic ─────────────────────────────────────────────────
@@ -90,6 +105,15 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             context_window: 400_000,
             max_output_tokens: 128_000,
         },
+        // v5.3.2 additions — GPT-5.4 mini/nano tiers
+        "gpt-5.4-mini" => ModelLimits {
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+        },
+        "gpt-5.4-nano" => ModelLimits {
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+        },
         "gpt-4.1" => ModelLimits {
             context_window: 1_047_576,
             max_output_tokens: 32_768,
@@ -99,6 +123,11 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             max_output_tokens: 32_768,
         },
         "o4-mini" => ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 100_000,
+        },
+        // v5.3.2 addition — o3-mini replaces o4-mini (retired Feb 2026)
+        "o3-mini" => ModelLimits {
             context_window: 200_000,
             max_output_tokens: 100_000,
         },
@@ -164,9 +193,31 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             context_window: 131_072,
             max_output_tokens: 32_768,
         },
+        // v5.3.2 additions — GLM 5.1 flagship + flashx tiers
+        "glm-5.1" => ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 131_072,
+        },
+        "glm-4.7-flashx" => ModelLimits {
+            context_window: 200_000,
+            max_output_tokens: 131_072,
+        },
+        "glm-4.6v-flashx" => ModelLimits {
+            context_window: 131_072,
+            max_output_tokens: 32_768,
+        },
 
         // ── MiniMax ───────────────────────────────────────────────────
         "MiniMax-M2.5" | "minimax-m2.5" => ModelLimits {
+            context_window: 204_800,
+            max_output_tokens: 196_608,
+        },
+        // v5.3.2 additions — MiniMax M2.7 (March 2026)
+        "MiniMax-M2.7" | "minimax-m2.7" => ModelLimits {
+            context_window: 204_800,
+            max_output_tokens: 196_608,
+        },
+        "MiniMax-M2.7-highspeed" | "minimax-m2.7-highspeed" => ModelLimits {
             context_window: 204_800,
             max_output_tokens: 196_608,
         },
@@ -212,6 +263,15 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             context_window: 163_840,
             max_output_tokens: 65_536,
         },
+        // v5.3.2 additions — DeepSeek now surfaces V3.2 via generic endpoints
+        "deepseek-chat" | "deepseek/deepseek-chat" => ModelLimits {
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+        },
+        "deepseek-reasoner" | "deepseek/deepseek-reasoner" => ModelLimits {
+            context_window: 128_000,
+            max_output_tokens: 65_536,
+        },
 
         // ── Qwen (Alibaba) ───────────────────────────────────────────
         "qwen3-coder" | "qwen/qwen3-coder" => ModelLimits {
@@ -238,6 +298,11 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             context_window: 131_072,
             max_output_tokens: 8_192,
         },
+        // v5.3.2 addition — Qwen 3.5 economy tier (Feb 2026)
+        "qwen3.5-flash" | "qwen/qwen3.5-flash" => ModelLimits {
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+        },
 
         // ── Mistral ──────────────────────────────────────────────────
         "mistral-large-2512" | "mistralai/mistral-large-2512" => ModelLimits {
@@ -252,6 +317,39 @@ fn lookup(model: &str) -> Option<ModelLimits> {
             context_window: 32_000,
             max_output_tokens: 32_768,
         },
+        // v5.3.2 additions — Mistral current-generation models (2025-2026)
+        "mistral-small-2603" | "mistralai/mistral-small-2603" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+        },
+        "mistral-small-2506" | "mistralai/mistral-small-2506" => ModelLimits {
+            context_window: 131_072,
+            max_output_tokens: 32_768,
+        },
+        "mistral-medium-2508" | "mistralai/mistral-medium-2508" => ModelLimits {
+            context_window: 131_072,
+            max_output_tokens: 32_768,
+        },
+        "mistral-medium-2505" | "mistralai/mistral-medium-2505" => ModelLimits {
+            context_window: 131_072,
+            max_output_tokens: 32_768,
+        },
+        "ministral-3b-2512" | "mistralai/ministral-3b-2512" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+        },
+        "ministral-8b-2512" | "mistralai/ministral-8b-2512" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+        },
+        "ministral-14b-2512" | "mistralai/ministral-14b-2512" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+        },
+        "devstral-2512" | "mistralai/devstral-2512" => ModelLimits {
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+        },
 
         // ── Cohere ───────────────────────────────────────────────────
         "command-a" | "cohere/command-a" => ModelLimits {
@@ -264,6 +362,11 @@ fn lookup(model: &str) -> Option<ModelLimits> {
                 max_output_tokens: 4_096,
             }
         }
+        // v5.3.2 addition — Command A Reasoning (August 2025)
+        "command-a-reasoning-08-2025" | "cohere/command-a-reasoning-08-2025" => ModelLimits {
+            context_window: 256_000,
+            max_output_tokens: 32_768,
+        },
 
         // ── OpenRouter Stealth ───────────────────────────────────────
         "hunter-alpha" | "openrouter/hunter-alpha" => ModelLimits {
@@ -275,6 +378,15 @@ fn lookup(model: &str) -> Option<ModelLimits> {
         "phi-4" | "microsoft/phi-4" => ModelLimits {
             context_window: 16_384,
             max_output_tokens: 16_384,
+        },
+        // v5.3.2 additions — Phi-4 mini and multimodal variants
+        "phi-4-mini-instruct" | "microsoft/phi-4-mini-instruct" => ModelLimits {
+            context_window: 131_072,
+            max_output_tokens: 4_096,
+        },
+        "phi-4-multimodal-instruct" | "microsoft/phi-4-multimodal-instruct" => ModelLimits {
+            context_window: 131_072,
+            max_output_tokens: 4_096,
         },
 
         _ => return None,
@@ -303,12 +415,15 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
     match provider {
         "anthropic" => vec!["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
         "openai" => vec![
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
             "gpt-5.2",
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-4o",
-            "o4-mini",
             "o3-mini",
+            "o4-mini",
             "gpt-3.5-turbo",
         ],
         "gemini" => vec![
@@ -326,15 +441,33 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
             "openrouter/hunter-alpha",
         ],
         "zai" | "zhipu" => vec![
-            "glm-4.7-flash",
-            "glm-4.7",
+            "glm-5.1",
             "glm-5",
-            "glm-5-code",
+            "glm-4.7",
+            "glm-4.7-flash",
+            "glm-4.7-flashx",
             "glm-4.6v",
-            "glm-4.6v-flash",
+            "glm-4.6v-flashx",
         ],
-        "minimax" => vec!["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+        "minimax" => vec![
+            "MiniMax-M2.7",
+            "MiniMax-M2.7-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed",
+        ],
         "stepfun" => vec!["step-3.5-flash", "step-3", "step-2-16k"],
+        "deepseek" => vec!["deepseek-chat", "deepseek-reasoner"],
+        "mistral" | "mistralai" => vec![
+            "mistral-large-2512",
+            "mistral-medium-2508",
+            "mistral-small-2603",
+            "ministral-14b-2512",
+            "ministral-8b-2512",
+            "ministral-3b-2512",
+            "devstral-2512",
+        ],
+        "cohere" => vec!["command-a", "command-a-reasoning-08-2025", "command-r-plus"],
+        "microsoft" => vec!["phi-4", "phi-4-mini-instruct", "phi-4-multimodal-instruct"],
         _ => vec![],
     }
 }
@@ -480,5 +613,102 @@ mod tests {
         let (ctx, out) = model_limits("openrouter/hunter-alpha");
         assert_eq!(ctx, 1_048_576);
         assert_eq!(out, 32_000);
+    }
+
+    // ── v5.3.2: additions from Phase 4 research ──────────────────
+
+    #[test]
+    fn openai_gpt_5_4_tiers_registered() {
+        let (ctx, out) = model_limits("gpt-5.4-mini");
+        assert_eq!(ctx, 400_000);
+        assert_eq!(out, 128_000);
+
+        let (ctx, out) = model_limits("gpt-5.4-nano");
+        assert_eq!(ctx, 400_000);
+        assert_eq!(out, 128_000);
+    }
+
+    #[test]
+    fn openai_o3_mini_registered() {
+        let (ctx, out) = model_limits("o3-mini");
+        assert_eq!(ctx, 200_000);
+        assert_eq!(out, 100_000);
+    }
+
+    #[test]
+    fn deepseek_generic_endpoints_registered() {
+        // DeepSeek now surfaces V3.2 via generic deepseek-chat / deepseek-reasoner
+        let (ctx, out) = model_limits("deepseek-chat");
+        assert_eq!(ctx, 128_000);
+        assert_eq!(out, 8_192);
+
+        let (ctx, out) = model_limits("deepseek-reasoner");
+        assert_eq!(ctx, 128_000);
+        assert_eq!(out, 65_536);
+    }
+
+    #[test]
+    fn qwen3_5_flash_registered() {
+        let (ctx, out) = model_limits("qwen3.5-flash");
+        assert_eq!(ctx, 1_048_576);
+        assert_eq!(out, 65_536);
+    }
+
+    #[test]
+    fn mistral_current_generation_registered() {
+        // New dated variants from docs.mistral.ai
+        let (ctx, _out) = model_limits("mistral-small-2603");
+        assert_eq!(ctx, 262_144);
+
+        let (ctx, _out) = model_limits("mistral-medium-2508");
+        assert_eq!(ctx, 131_072);
+
+        let (ctx, out) = model_limits("ministral-14b-2512");
+        assert_eq!(ctx, 262_144);
+        assert_eq!(out, 32_768);
+
+        let (ctx, _out) = model_limits("devstral-2512");
+        assert_eq!(ctx, 262_144);
+    }
+
+    #[test]
+    fn glm_5_1_and_flashx_registered() {
+        let (ctx, out) = model_limits("glm-5.1");
+        assert_eq!(ctx, 200_000);
+        assert_eq!(out, 131_072);
+
+        let (ctx, _out) = model_limits("glm-4.7-flashx");
+        assert_eq!(ctx, 200_000);
+
+        let (ctx, _out) = model_limits("glm-4.6v-flashx");
+        assert_eq!(ctx, 131_072);
+    }
+
+    #[test]
+    fn minimax_m2_7_registered() {
+        let (ctx, out) = model_limits("MiniMax-M2.7");
+        assert_eq!(ctx, 204_800);
+        assert_eq!(out, 196_608);
+
+        let (ctx, _out) = model_limits("MiniMax-M2.7-highspeed");
+        assert_eq!(ctx, 204_800);
+    }
+
+    #[test]
+    fn phi_4_variants_registered() {
+        let (ctx, out) = model_limits("phi-4-mini-instruct");
+        assert_eq!(ctx, 131_072);
+        assert_eq!(out, 4_096);
+
+        let (ctx, out) = model_limits("phi-4-multimodal-instruct");
+        assert_eq!(ctx, 131_072);
+        assert_eq!(out, 4_096);
+    }
+
+    #[test]
+    fn command_a_reasoning_registered() {
+        let (ctx, out) = model_limits("command-a-reasoning-08-2025");
+        assert_eq!(ctx, 256_000);
+        assert_eq!(out, 32_768);
     }
 }

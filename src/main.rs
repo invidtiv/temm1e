@@ -11,8 +11,8 @@ use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use temm1e_core::config::credentials::{
-    credentials_path, detect_api_key, is_placeholder_key, load_active_provider_keys,
-    load_credentials_file, load_saved_credentials, save_credentials,
+    credentials_path, detect_api_key, is_placeholder_key, is_placeholder_key_lenient,
+    load_active_provider_keys, load_credentials_file, load_saved_credentials, save_credentials,
 };
 use temm1e_core::types::model_registry::{
     available_models_for_provider, default_model, is_vision_model,
@@ -207,6 +207,22 @@ async fn validate_provider_key(
     let provider = temm1e_providers::create_provider(config)
         .map_err(|e| format!("Failed to create provider: {}", e))?;
     let provider_arc: Arc<dyn temm1e_core::Provider> = Arc::from(provider);
+
+    // Custom endpoint (LM Studio, Ollama, vLLM, custom proxy, …) — we can't
+    // reliably validate the key via a test completion because the proxy's
+    // model catalog is unknown to us. Trust the user's setup; the first
+    // real message will surface any issue with a clear provider error,
+    // rather than our misleading "Invalid API key" wrapper (which fires
+    // on 404 "model not found" responses because the error classifier
+    // below matches 404 as an auth failure).
+    if config.base_url.is_some() {
+        tracing::debug!(
+            base_url = ?config.base_url,
+            model = ?config.model,
+            "Skipping validate_provider_key test call — custom base_url set"
+        );
+        return Ok(provider_arc);
+    }
 
     let test_req = temm1e_core::types::message::CompletionRequest {
         model: config.model.clone().unwrap_or_default(),
@@ -517,7 +533,20 @@ fn build_system_prompt(personality: &temm1e_anima::personality::PersonalityConfi
         prompt.push_str("\nCURRENT CONFIGURATION:\n");
         prompt.push_str(&format!("Active provider: {}\n", creds.active));
         for p in &creds.providers {
-            let key_count = p.keys.iter().filter(|k| !is_placeholder_key(k)).count();
+            // Proxy providers (custom base_url) use lenient placeholder check
+            // so short LM Studio / Ollama keys are counted correctly.
+            let has_custom = p.base_url.is_some();
+            let key_count = p
+                .keys
+                .iter()
+                .filter(|k| {
+                    if has_custom {
+                        !is_placeholder_key_lenient(k)
+                    } else {
+                        !is_placeholder_key(k)
+                    }
+                })
+                .count();
             let base_note = if let Some(ref url) = p.base_url {
                 format!(" (via {})", url)
             } else {
@@ -753,7 +782,20 @@ fn list_configured_providers() -> String {
             }
             has_providers = true;
             for p in &creds.providers {
-                let key_count = p.keys.iter().filter(|k| !is_placeholder_key(k)).count();
+                // Proxy providers use lenient placeholder check so short
+                // LM Studio / Ollama keys are counted correctly.
+                let has_custom = p.base_url.is_some();
+                let key_count = p
+                    .keys
+                    .iter()
+                    .filter(|k| {
+                        if has_custom {
+                            !is_placeholder_key_lenient(k)
+                        } else {
+                            !is_placeholder_key(k)
+                        }
+                    })
+                    .count();
                 let active = if p.name == creds.active && !has_providers {
                     " (active)"
                 } else {
@@ -904,7 +946,17 @@ fn handle_model_command(args: &str) -> String {
     // Skip validation for proxy/OpenRouter providers (custom base_url) — they accept any model.
     let is_proxy = active_provider.base_url.is_some() || active_provider.name == "openrouter";
     let known = available_models_for_provider(&active_provider.name);
-    if !is_proxy && !known.is_empty() && !known.contains(&target) {
+    // Accept either hardcoded models OR user-registered custom models
+    // (via /addmodel). Custom names extend the valid-target set for the
+    // active provider — they never shadow hardcoded first-party names
+    // unless the user explicitly opts in.
+    let custom_names: Vec<String> =
+        temm1e_core::config::custom_models::custom_models_for_provider(&active_provider.name)
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+    let in_custom = custom_names.iter().any(|n| n == target);
+    if !is_proxy && !known.is_empty() && !known.contains(&target) && !in_custom {
         let list = known
             .iter()
             .map(|m| {
@@ -913,9 +965,18 @@ fn handle_model_command(args: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let custom_note = if custom_names.is_empty() {
+            "\n\nTip: register custom models with /addmodel".to_string()
+        } else {
+            format!(
+                "\n\nCustom models for {}:\n  {}",
+                active_provider.name,
+                custom_names.join("\n  ")
+            )
+        };
         return format!(
-            "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>",
-            target, active_provider.name, list
+            "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>{}",
+            target, active_provider.name, list, custom_note
         );
     }
 
@@ -997,6 +1058,253 @@ fn remove_provider(provider_name: &str) -> String {
                 .map(|p| p.model.as_str())
                 .unwrap_or("unknown")
         )
+    }
+}
+
+// ── Custom model commands (/addmodel, /listmodels, /removemodel) ────
+//
+// Users running LM Studio / Ollama / vLLM / custom proxies register their
+// local models via these commands. Storage lives in a separate file
+// (`~/.temm1e/custom_models.toml`) so credentials.toml format is untouched.
+
+/// Handle `/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>]`.
+fn handle_addmodel_command(args: &str) -> String {
+    use temm1e_core::config::custom_models::{upsert_custom_model, CustomModel};
+
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return "Usage: /addmodel <name> context:<int> output:<int> \
+                [input_price:<float>] [output_price:<float>]\n\n\
+                Example: /addmodel qwen3-coder-30b-a3b context:262144 output:65536\n\
+                Example: /addmodel glm-4.7 context:200000 output:131072 \
+                input_price:0.5 output_price:2.0"
+            .to_string();
+    }
+
+    // Require an active provider so we know which provider to scope the model to.
+    let active_provider = match load_credentials_file() {
+        Some(c) if !c.providers.is_empty() => c.active.clone(),
+        _ => {
+            return "No active provider. Configure one first with /addkey or `proxy …`, \
+                    then /addmodel to register a custom model."
+                .to_string();
+        }
+    };
+
+    // First whitespace-delimited token is the name; the rest are k/v pairs.
+    let mut tokens = trimmed.split_whitespace();
+    let name = match tokens.next() {
+        Some(n) if !n.contains(':') => n.to_string(),
+        _ => {
+            return "Missing model name. First argument must be the model name \
+                    (before any k:v pairs).\nUsage: /addmodel <name> \
+                    context:<int> output:<int> [input_price:<float>] \
+                    [output_price:<float>]"
+                .to_string();
+        }
+    };
+
+    let mut context_window: Option<usize> = None;
+    let mut max_output_tokens: Option<usize> = None;
+    let mut input_price_per_1m: f64 = 0.0;
+    let mut output_price_per_1m: f64 = 0.0;
+
+    for token in tokens {
+        let Some((k, v)) = token.split_once(':') else {
+            return format!(
+                "Unexpected token `{}`. All arguments after the model name \
+                 must be k:v pairs (context:, output:, input_price:, output_price:).",
+                token
+            );
+        };
+        match k.to_lowercase().as_str() {
+            "context" | "context_window" | "ctx" => match v.parse::<usize>() {
+                Ok(n) => context_window = Some(n),
+                Err(_) => return format!("Invalid context value `{}` — expected integer.", v),
+            },
+            "output" | "max_output" | "max_output_tokens" | "out" => match v.parse::<usize>() {
+                Ok(n) => max_output_tokens = Some(n),
+                Err(_) => return format!("Invalid output value `{}` — expected integer.", v),
+            },
+            "input_price" | "input_price_per_1m" | "in_price" => match v.parse::<f64>() {
+                Ok(p) if p >= 0.0 => input_price_per_1m = p,
+                _ => {
+                    return format!(
+                        "Invalid input_price value `{}` — expected non-negative float.",
+                        v
+                    )
+                }
+            },
+            "output_price" | "output_price_per_1m" | "out_price" => match v.parse::<f64>() {
+                Ok(p) if p >= 0.0 => output_price_per_1m = p,
+                _ => {
+                    return format!(
+                        "Invalid output_price value `{}` — expected non-negative float.",
+                        v
+                    )
+                }
+            },
+            other => {
+                return format!(
+                    "Unknown key `{}`. Accepted keys: context:, output:, \
+                     input_price:, output_price:",
+                    other
+                );
+            }
+        }
+    }
+
+    let context_window = match context_window {
+        Some(c) if c > 0 => c,
+        Some(_) => return "context: must be greater than 0.".to_string(),
+        None => {
+            return "Missing required `context:<int>`. See `/addmodel` for usage.".to_string();
+        }
+    };
+    let max_output_tokens = match max_output_tokens {
+        Some(o) if o > 0 => o,
+        Some(_) => return "output: must be greater than 0.".to_string(),
+        None => {
+            return "Missing required `output:<int>`. See `/addmodel` for usage.".to_string();
+        }
+    };
+
+    let model = CustomModel {
+        provider: active_provider.clone(),
+        name: name.clone(),
+        context_window,
+        max_output_tokens,
+        input_price_per_1m,
+        output_price_per_1m,
+    };
+
+    match upsert_custom_model(model) {
+        Ok(()) => {
+            let price_note = if input_price_per_1m == 0.0 && output_price_per_1m == 0.0 {
+                " (free / local inference)".to_string()
+            } else {
+                format!(
+                    " (pricing: ${:.2}/1M in · ${:.2}/1M out)",
+                    input_price_per_1m, output_price_per_1m
+                )
+            };
+            format!(
+                "Added custom model `{}` for provider `{}`:\n  context_window:   {}\n  max_output:       {}{}\n\nSwitch to it with: /model {}",
+                name, active_provider, context_window, max_output_tokens, price_note, name
+            )
+        }
+        Err(e) => format!("Failed to save custom model: {}", e),
+    }
+}
+
+/// Handle `/listmodels` — show hardcoded + custom models grouped by provider.
+fn handle_listmodels_command() -> String {
+    use temm1e_core::config::custom_models::custom_models_for_provider;
+
+    let creds = match load_credentials_file() {
+        Some(c) => c,
+        None => return "No providers configured. Use /addkey or `proxy …` first.".to_string(),
+    };
+    if creds.providers.is_empty() {
+        return "No providers configured. Use /addkey or `proxy …` first.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    for p in &creds.providers {
+        let active_marker = if p.name == creds.active {
+            " (active)"
+        } else {
+            ""
+        };
+        lines.push(format!("Provider: {}{}", p.name, active_marker));
+
+        // Hardcoded models from the static registry
+        let hardcoded = available_models_for_provider(&p.name);
+        if !hardcoded.is_empty() {
+            lines.push("  Hardcoded:".to_string());
+            for m in &hardcoded {
+                let (ctx, out) = temm1e_core::types::model_registry::model_limits(m);
+                let current = if *m == p.model { " ← current" } else { "" };
+                lines.push(format!(
+                    "    {} — {}K ctx · {}K out{}",
+                    m,
+                    ctx / 1000,
+                    out / 1000,
+                    current
+                ));
+            }
+        }
+
+        // Custom models for this provider
+        let custom = custom_models_for_provider(&p.name);
+        if custom.is_empty() {
+            lines.push("  Custom: (none)".to_string());
+        } else {
+            lines.push("  Custom:".to_string());
+            for m in &custom {
+                let current = if m.name == p.model {
+                    " ← current"
+                } else {
+                    ""
+                };
+                let price = if m.input_price_per_1m == 0.0 && m.output_price_per_1m == 0.0 {
+                    " · free".to_string()
+                } else {
+                    format!(
+                        " · ${:.2}/1M in · ${:.2}/1M out",
+                        m.input_price_per_1m, m.output_price_per_1m
+                    )
+                };
+                lines.push(format!(
+                    "    {} — {}K ctx · {}K out{}{}",
+                    m.name,
+                    m.context_window / 1000,
+                    m.max_output_tokens / 1000,
+                    price,
+                    current
+                ));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    lines.push(
+        "Add a custom model: /addmodel <name> context:<int> output:<int> \
+         [input_price:<float>] [output_price:<float>]"
+            .to_string(),
+    );
+    lines.push("Remove a custom model: /removemodel <name>".to_string());
+    lines.join("\n")
+}
+
+/// Handle `/removemodel <name>` — remove a custom model from the active provider.
+fn handle_removemodel_command(args: &str) -> String {
+    use temm1e_core::config::custom_models::remove_custom_model;
+
+    let name = args.trim();
+    if name.is_empty() {
+        return "Usage: /removemodel <name>\nExample: /removemodel qwen3-coder-30b-a3b\n\n\
+                Only affects the active provider. Use /listmodels to see current entries."
+            .to_string();
+    }
+
+    let active_provider = match load_credentials_file() {
+        Some(c) if !c.providers.is_empty() => c.active.clone(),
+        _ => {
+            return "No active provider. Nothing to remove.".to_string();
+        }
+    };
+
+    match remove_custom_model(name, Some(&active_provider)) {
+        Ok(0) => format!(
+            "No custom model `{}` found for provider `{}`. Use /listmodels to see current entries.",
+            name, active_provider
+        ),
+        Ok(n) => format!(
+            "Removed {} custom model entry for `{}` (provider `{}`).",
+            n, name, active_provider
+        ),
+        Err(e) => format!("Failed to remove custom model: {}", e),
     }
 }
 
@@ -2153,17 +2461,42 @@ async fn main() -> Result<()> {
                 };
 
             if let Some((ref pname, ref key, ref model)) = credentials {
-                // Filter out placeholder/invalid keys at startup
-                if is_placeholder_key(key) {
+                // Filter out placeholder/invalid keys at startup. Use lenient
+                // mode for custom-endpoint providers so short LM Studio / Ollama
+                // keys pass — otherwise this check would wrongly reject keys
+                // that load_saved_credentials already approved via lenient filter.
+                let has_custom_endpoint = load_credentials_file()
+                    .and_then(|c| {
+                        c.providers
+                            .iter()
+                            .find(|p| p.name == *pname)
+                            .and_then(|p| p.base_url.clone())
+                    })
+                    .is_some();
+                let is_placeholder_start = if has_custom_endpoint {
+                    is_placeholder_key_lenient(key)
+                } else {
+                    is_placeholder_key(key)
+                };
+                if is_placeholder_start {
                     tracing::warn!(provider = %pname, "Primary API key is a placeholder — starting in onboarding mode");
                     // Fall through to onboarding
                 } else {
-                    // Load all keys and saved base_url for this provider
+                    // Load all keys and saved base_url for this provider.
+                    // Inside the filter closure, gate lenient vs strict on the
+                    // saved base_url so proxy providers keep their short keys.
                     let (all_keys, saved_base_url) = load_active_provider_keys()
                         .map(|(_, keys, _, burl)| {
+                            let has_custom = burl.is_some();
                             let valid: Vec<String> = keys
                                 .into_iter()
-                                .filter(|k| !is_placeholder_key(k))
+                                .filter(|k| {
+                                    if has_custom {
+                                        !is_placeholder_key_lenient(k)
+                                    } else {
+                                        !is_placeholder_key(k)
+                                    }
+                                })
                                 .collect();
                             (valid, burl)
                         })
@@ -2204,7 +2537,11 @@ async fn main() -> Result<()> {
                     };
                     // TemDOS: register invoke_core tool now that provider is available
                     if !core_registry.read().await.is_empty() {
-                        let model_pricing = temm1e_agent::budget::get_pricing(model);
+                        // Custom-model aware pricing lookup — tries the active
+                        // provider's custom_models.toml first, falls back to
+                        // hardcoded substring pricing.
+                        let model_pricing =
+                            temm1e_agent::budget::get_pricing_with_custom(pname, model);
                         let invoke_core = temm1e_cores::InvokeCoreTool::new(
                             core_registry.clone(),
                             provider.clone(),
@@ -3213,6 +3550,50 @@ async fn main() -> Result<()> {
                                         return;
                                     }
 
+                                    // /addmodel — register a custom model for the active provider
+                                    if cmd_lower.starts_with("/addmodel") {
+                                        let args = msg_text_cmd.trim()["/addmodel".len()..].trim();
+                                        let info = handle_addmodel_command(args);
+                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                            chat_id: msg.chat_id.clone(),
+                                            text: info,
+                                            reply_to: Some(msg.id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        send_with_retry(&*sender, reply).await;
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
+                                    }
+
+                                    // /listmodels — show all hardcoded + custom models
+                                    if cmd_lower == "/listmodels" {
+                                        let info = handle_listmodels_command();
+                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                            chat_id: msg.chat_id.clone(),
+                                            text: info,
+                                            reply_to: Some(msg.id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        send_with_retry(&*sender, reply).await;
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
+                                    }
+
+                                    // /removemodel — drop a custom model for the active provider
+                                    if cmd_lower.starts_with("/removemodel") {
+                                        let args = msg_text_cmd.trim()["/removemodel".len()..].trim();
+                                        let info = handle_removemodel_command(args);
+                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                            chat_id: msg.chat_id.clone(),
+                                            text: info,
+                                            reply_to: Some(msg.id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        send_with_retry(&*sender, reply).await;
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
+                                    }
+
                                     // /vigil — self-diagnosis vigil commands
                                     if cmd_lower.starts_with("/vigil") {
                                         let subcmd = cmd_lower.strip_prefix("/vigil").unwrap_or("").trim();
@@ -3341,8 +3722,17 @@ async fn main() -> Result<()> {
                                                 { result }
                                             } else if let Some(creds) = load_credentials_file() {
                                                 if let Some(prov) = creds.providers.iter().find(|p| p.name == creds.active) {
+                                                    // Proxy providers use lenient placeholder check so short
+                                                    // LM Studio / Ollama keys survive /model reload.
+                                                    let has_custom = prov.base_url.is_some();
                                                     let valid_keys: Vec<String> = prov.keys.iter()
-                                                        .filter(|k| !is_placeholder_key(k))
+                                                        .filter(|k| {
+                                                            if has_custom {
+                                                                !is_placeholder_key_lenient(k)
+                                                            } else {
+                                                                !is_placeholder_key(k)
+                                                            }
+                                                        })
                                                         .cloned()
                                                         .collect();
                                                     let effective_base_url = prov.base_url.clone().or_else(|| base_url.clone());
@@ -3532,6 +3922,9 @@ Available commands:\n\n\
 /model — Show current model and available models\n\
 /model <name> — Switch to a different model\n\
 /removekey <provider> — Remove a provider's API key\n\
+/addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] — Register a custom model (LM Studio, Ollama, vLLM, …)\n\
+/listmodels — Show hardcoded + custom models grouped by provider\n\
+/removemodel <name> — Remove a custom model from the active provider\n\
 /usage — Show token usage and cost summary\n\
 /memory — Show current memory strategy\n\
 /memory lambda — Switch to λ-Memory (decay + persistence)\n\
@@ -3964,8 +4357,17 @@ Just type a message to chat with the AI agent.",
 
                                         let reload_result: String = if let Some(creds) = load_credentials_file() {
                                             if let Some(prov) = creds.providers.iter().find(|p| p.name == creds.active).or_else(|| creds.providers.first()) {
+                                                // Proxy providers use lenient placeholder check so short
+                                                // LM Studio / Ollama keys survive /reload.
+                                                let has_custom = prov.base_url.is_some();
                                                 let valid_keys: Vec<String> = prov.keys.iter()
-                                                    .filter(|k| !is_placeholder_key(k))
+                                                    .filter(|k| {
+                                                        if has_custom {
+                                                            !is_placeholder_key_lenient(k)
+                                                        } else {
+                                                            !is_placeholder_key(k)
+                                                        }
+                                                    })
                                                     .cloned()
                                                     .collect();
                                                 if valid_keys.is_empty() {
@@ -4483,7 +4885,14 @@ Just type a message to chat with the AI agent.",
                                                         if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_chat_id); }
                                                         return;
                                                     }
-                                                    let model = default_model(cred.provider).to_string();
+                                                    // Honor user-specified `model:` from proxy command;
+                                                    // fall back to provider default otherwise. Same
+                                                    // pattern as the main onboarding flow so LM Studio /
+                                                    // Ollama users can pick their local model at setup.
+                                                    let model = cred
+                                                        .model
+                                                        .clone()
+                                                        .unwrap_or_else(|| default_model(cred.provider).to_string());
                                                     let effective_base_url = cred.base_url.clone().or_else(|| base_url.clone());
                                                     let test_config = temm1e_core::types::config::ProviderConfig {
                                                         name: Some(cred.provider.to_string()),
@@ -4619,7 +5028,12 @@ Just type a message to chat with the AI agent.",
                                                 if let Ok(mut pq) = pending_for_worker.lock() { pq.remove(&worker_chat_id); }
                                                 return;
                                             }
-                                            let model = default_model(cred.provider).to_string();
+                                            // Honor user-specified `model:` from proxy command;
+                                            // fall back to provider default otherwise.
+                                            let model = cred
+                                                .model
+                                                .clone()
+                                                .unwrap_or_else(|| default_model(cred.provider).to_string());
                                             let effective_base_url = cred.base_url.clone().or_else(|| base_url.clone());
 
                                             // Validate the key BEFORE saving — don't brick the agent
@@ -5110,9 +5524,18 @@ Just type a message to chat with the AI agent.",
                                         if let Some((new_name, new_keys, new_model, saved_base_url)) = load_active_provider_keys() {
                                             let current_model = agent.model().to_string();
                                             if new_model != current_model || new_keys.len() > 1 {
-                                                // Filter out placeholder keys before reloading
+                                                // Filter out placeholder keys before reloading. Use lenient
+                                                // mode when base_url is set so short LM Studio / Ollama keys
+                                                // survive hot-reload.
+                                                let has_custom_hot = saved_base_url.is_some();
                                                 let valid_keys: Vec<String> = new_keys.into_iter()
-                                                    .filter(|k| !is_placeholder_key(k))
+                                                    .filter(|k| {
+                                                        if has_custom_hot {
+                                                            !is_placeholder_key_lenient(k)
+                                                        } else {
+                                                            !is_placeholder_key(k)
+                                                        }
+                                                    })
                                                     .collect();
                                                 if valid_keys.is_empty() {
                                                     tracing::warn!(
@@ -5240,7 +5663,15 @@ Just type a message to chat with the AI agent.",
                                             let provider_name = cred.provider;
                                             let api_key = cred.api_key;
                                             let custom_base_url = cred.base_url;
-                                            let model = default_model(provider_name).to_string();
+                                            // If the user passed `model:NAME` in a proxy command,
+                                            // honor it. Otherwise fall back to the provider's
+                                            // hardcoded default. This is what makes
+                                            // `proxy openai http://lm/v1 sk-lm-xxx model:qwen3-coder`
+                                            // work end-to-end for LM Studio / Ollama / vLLM.
+                                            let model = cred
+                                                .model
+                                                .clone()
+                                                .unwrap_or_else(|| default_model(provider_name).to_string());
                                             // Load existing keys for this provider (if any)
                                             let mut all_keys = vec![api_key.clone()];
                                             if let Some(creds) = load_credentials_file() {
@@ -5793,12 +6224,36 @@ Just type a message to chat with the AI agent.",
                 "CLI Chat: checking credentials for agent init"
             );
             if let Some((pname, key, model)) = credentials {
-                if !is_placeholder_key(&key) {
+                // Filter out placeholder/invalid keys at startup. Use lenient
+                // mode for custom-endpoint providers so short LM Studio / Ollama
+                // keys pass — otherwise this check would wrongly reject keys
+                // that load_saved_credentials already approved via lenient filter.
+                let has_custom_endpoint = load_credentials_file()
+                    .and_then(|c| {
+                        c.providers
+                            .iter()
+                            .find(|p| p.name == pname)
+                            .and_then(|p| p.base_url.clone())
+                    })
+                    .is_some();
+                let is_placeholder_start = if has_custom_endpoint {
+                    is_placeholder_key_lenient(&key)
+                } else {
+                    is_placeholder_key(&key)
+                };
+                if !is_placeholder_start {
                     let (all_keys, saved_base_url) = load_active_provider_keys()
                         .map(|(_, keys, _, burl)| {
+                            let has_custom = burl.is_some();
                             let valid: Vec<String> = keys
                                 .into_iter()
-                                .filter(|k| !is_placeholder_key(k))
+                                .filter(|k| {
+                                    if has_custom {
+                                        !is_placeholder_key_lenient(k)
+                                    } else {
+                                        !is_placeholder_key(k)
+                                    }
+                                })
                                 .collect();
                             (valid, burl)
                         })
@@ -5845,7 +6300,9 @@ Just type a message to chat with the AI agent.",
                         Ok(provider) => {
                             // TemDOS: register invoke_core tool for CLI chat
                             if !cli_core_registry.read().await.is_empty() {
-                                let model_pricing = temm1e_agent::budget::get_pricing(&model);
+                                // Custom-model aware pricing lookup.
+                                let model_pricing =
+                                    temm1e_agent::budget::get_pricing_with_custom(&pname, &model);
                                 let invoke_core = temm1e_cores::InvokeCoreTool::new(
                                     cli_core_registry.clone(),
                                     provider.clone(),
@@ -6204,6 +6661,29 @@ Just type a message to chat with the AI agent.",
                     continue;
                 }
 
+                // /addmodel — register a custom model for the active provider
+                if cmd_lower.starts_with("/addmodel") {
+                    let args = msg_text.trim()["/addmodel".len()..].trim();
+                    println!("\n{}\n", handle_addmodel_command(args));
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
+                // /listmodels — show hardcoded + custom models
+                if cmd_lower == "/listmodels" {
+                    println!("\n{}\n", handle_listmodels_command());
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
+                // /removemodel — drop a custom model for the active provider
+                if cmd_lower.starts_with("/removemodel") {
+                    let args = msg_text.trim()["/removemodel".len()..].trim();
+                    println!("\n{}\n", handle_removemodel_command(args));
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
                 // /removekey <provider>
                 if cmd_lower.starts_with("/removekey") {
                     let provider_arg = msg_text.trim()["/removekey".len()..].trim();
@@ -6253,6 +6733,9 @@ Just type a message to chat with the AI agent.",
                          /model — Show current model and available models\n\
                          /model <name> — Switch to a different model\n\
                          /removekey <provider> — Remove a provider's API key\n\
+                         /addmodel <name> context:<int> output:<int> [input_price:<float>] [output_price:<float>] — Register a custom model\n\
+                         /listmodels — Show hardcoded + custom models grouped by provider\n\
+                         /removemodel <name> — Remove a custom model from the active provider\n\
                          /usage — Show token usage and cost summary\n\
                          /memory — Show current memory strategy\n\
                          /memory lambda — Switch to λ-Memory (decay + persistence)\n\
@@ -6898,7 +7381,13 @@ Just type a message to chat with the AI agent.",
                     match decrypt_otk_blob(blob_b64, &setup_tokens, &msg.chat_id).await {
                         Ok(api_key_text) => {
                             if let Some(cred) = detect_api_key(&api_key_text) {
-                                let model = default_model(cred.provider).to_string();
+                                // Honor user-specified `model:` from proxy command
+                                // (if OTK blob contained a proxy-style payload);
+                                // fall back to provider default otherwise.
+                                let model = cred
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| default_model(cred.provider).to_string());
                                 let effective_base_url =
                                     cred.base_url.clone().or_else(|| base_url.clone());
                                 let test_config = temm1e_core::types::config::ProviderConfig {
@@ -6974,9 +7463,17 @@ Just type a message to chat with the AI agent.",
                     continue;
                 }
 
-                // Detect raw API key paste
+                // Detect raw API key paste (CLI chat onboarding path)
                 if let Some(cred) = detect_api_key(msg_text) {
-                    let model = default_model(cred.provider).to_string();
+                    // Honor user-specified `model:` from proxy command;
+                    // fall back to provider default otherwise. This is the
+                    // CLI-chat onboarding path — critical for LM Studio /
+                    // Ollama / vLLM users who type `proxy openai <url> <key>
+                    // model:<local-model-name>` at the temm1e> prompt.
+                    let model = cred
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| default_model(cred.provider).to_string());
                     let effective_base_url = cred.base_url.clone().or_else(|| base_url.clone());
                     let test_config = temm1e_core::types::config::ProviderConfig {
                         name: Some(cred.provider.to_string()),

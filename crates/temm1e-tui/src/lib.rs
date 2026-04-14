@@ -696,10 +696,20 @@ fn load_api_keys_cache() -> Vec<ApiKeyEntry> {
         .map(|p| {
             // Pick the first non-placeholder key for the fingerprint; if
             // all keys are placeholders, use "?" as a marker.
+            // Proxy providers use lenient placeholder check so short
+            // LM Studio / Ollama keys aren't shown as "????".
+            let has_custom = p.base_url.is_some();
             let fingerprint = p
                 .keys
                 .iter()
-                .find(|k| !temm1e_core::config::credentials::is_placeholder_key(k) && k.len() >= 4)
+                .find(|k| {
+                    let is_ph = if has_custom {
+                        temm1e_core::config::credentials::is_placeholder_key_lenient(k)
+                    } else {
+                        temm1e_core::config::credentials::is_placeholder_key(k)
+                    };
+                    !is_ph && k.len() >= 4
+                })
                 .map(|k| {
                     k.chars()
                         .rev()
