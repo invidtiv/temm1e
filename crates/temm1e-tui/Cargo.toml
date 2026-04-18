@@ -81,3 +81,13 @@ codex-oauth = ["dep:temm1e-codex-oauth"]
 [dev-dependencies]
 temm1e-test-utils.workspace = true
 insta = "1"
+tracing-subscriber.workspace = true
+
+# Headless TUI wiring smoke test — runs the exact spawn_agent() code
+# path launch_tui uses, but skips ratatui's terminal init. Used to
+# empirically verify the interactive-interface parity gate without
+# needing a real TTY. Invoke with:
+#   cargo run --example tui_smoke --release
+[[example]]
+name = "tui_smoke"
+path = "examples/tui_smoke.rs"

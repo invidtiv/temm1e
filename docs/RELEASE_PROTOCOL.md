@@ -117,25 +117,82 @@ interactive interface. Current snapshot (update at each release):
 #### Per-interface verification steps
 
 For **every** interface above, run a smoke test and confirm the feature's
-startup log appears. Example registration-log anchors:
+startup log appears. CLI chat and `start` can be smoke-tested with
+pipe/redirect; **TUI cannot** (ratatui needs a real TTY and fails with
+`Device not configured` when stdin/stdout are redirected). Use the
+dedicated headless harness for TUI:
 
 ```bash
-# JIT swarm wired?
-./target/release/temm1e chat < /dev/null 2>&1 | grep "JIT spawn_swarm tool registered"
-./target/release/temm1e tui < /dev/null 2>&1 | grep "JIT spawn_swarm tool registered"
+# 1) CLI chat parity
+./target/release/temm1e chat <<<'hi' 2>&1 | grep -E "JIT spawn_swarm tool registered \(CLI|Many Tems initialized \(CLI|Tem Conscious.*initialized|Social intelligence initialized"
 
-# Consciousness wired?
-./target/release/temm1e chat < /dev/null 2>&1 | grep "Tem Conscious: LLM-powered consciousness initialized"
+# 2) Server parity
+timeout 10 ./target/release/temm1e start > /tmp/parity_start.log 2>&1 &
+sleep 12
+grep -E "JIT spawn_swarm tool registered|Many Tems initialized|Tem Conscious.*initialized" /tmp/parity_start.log
 
-# Hive instance created (needed for swarm)?
-./target/release/temm1e chat < /dev/null 2>&1 | grep "Many Tems initialized"
+# 3) TUI parity — MANDATORY use the headless example harness
+#    (ratatui crashes with "Device not configured" under pipe/redirect)
+cargo build --release --example tui_smoke -p temm1e-tui
+./target/release/examples/tui_smoke 2>&1 | grep -E "JIT spawn_swarm tool registered \(TUI|Many Tems initialized \(TUI|JIT spawn_swarm context wired \(TUI|Tem Conscious initialized \(TUI|Social intelligence initialized \(TUI"
 ```
 
+The **tui_smoke example** (`crates/temm1e-tui/examples/tui_smoke.rs`)
+calls the exact `spawn_agent()` function that `launch_tui` calls, but
+skips ratatui's terminal init. It sets up a tracing subscriber that
+emits logs to stdout, waits 5s for async init to complete, then exits.
+**This is the only way to empirically verify TUI wiring without a real
+terminal** — never skip it on release.
+
 For every feature listed in the release: include a greppable registration
-log message, run the smoke test against EACH interface, and paste the
-greps into the release report. A missing log = a missing wiring = blocker
-for release unless the release notes EXPLICITLY declare non-parity for
-that interface.
+log message, run ALL THREE smoke tests against the release binary, and
+paste the greps into the release report. A missing log = a missing
+wiring = blocker for release unless the release notes EXPLICITLY declare
+non-parity for that interface.
+
+#### One-shot parity verification script
+
+Save as `scripts/release_parity_smoke.sh` (or inline in the release flow):
+
+```bash
+#!/usr/bin/env bash
+set -u
+BIN=./target/release/temm1e
+cargo build --release --bin temm1e 2>&1 | tail -1
+cargo build --release --example tui_smoke -p temm1e-tui 2>&1 | tail -1
+
+# CLI
+( printf 'hi\n'; sleep 15; printf '/quit\n' ) | "$BIN" chat > /tmp/p_cli.log 2>&1 &
+( sleep 30; kill -TERM $! 2>/dev/null ) & wait
+
+# Server
+"$BIN" start > /tmp/p_srv.log 2>&1 &
+( sleep 12; kill -TERM $! 2>/dev/null ) & wait
+
+# TUI (via dedicated headless harness — DO NOT use `temm1e tui` directly)
+./target/release/examples/tui_smoke > /tmp/p_tui.log 2>&1
+
+for anchor in \
+  "JIT spawn_swarm tool registered" \
+  "Many Tems initialized" \
+  "JIT spawn_swarm context wired" \
+  "Tem Conscious.*initialized" \
+  "Social intelligence initialized" \
+  "Perpetuum runtime started" \
+  "TemDOS cores loaded" \
+  "TemDOS invoke_core tool registered" \
+  "Loaded MCP config" \
+  "Custom script tools loaded"
+do
+  cli=$(grep -c "$anchor" /tmp/p_cli.log 2>/dev/null || echo 0)
+  srv=$(grep -c "$anchor" /tmp/p_srv.log 2>/dev/null || echo 0)
+  tui=$(grep -c "$anchor" /tmp/p_tui.log 2>/dev/null || echo 0)
+  printf "%-45s CLI=%s TUI=%s srv=%s\n" "$anchor" "$cli" "$tui" "$srv"
+done
+```
+
+Paste the output table into the release report's parity section. Any
+anchor that shows `0` across any expected interface = blocker.
 
 #### Rules
 
