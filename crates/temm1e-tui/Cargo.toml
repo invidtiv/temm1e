@@ -19,6 +19,7 @@ temm1e-anima.workspace = true
 temm1e-perpetuum.workspace = true
 temm1e-cores.workspace = true
 temm1e-distill.workspace = true
+temm1e-skills.workspace = true
 temm1e-codex-oauth = { workspace = true, optional = true }
 temm1e-mcp = { workspace = true, optional = true }
 

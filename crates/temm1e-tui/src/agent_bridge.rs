@@ -176,6 +176,33 @@ pub async fn spawn_agent(
     };
     let shared_mode: Arc<RwLock<Temm1eMode>> = Arc::new(RwLock::new(initial_mode));
 
+    // ── Vault (encrypted credential store) for TUI ──
+    let tui_vault: Option<Arc<dyn temm1e_core::Vault>> = match temm1e_vault::LocalVault::new().await
+    {
+        Ok(v) => {
+            tracing::info!("Vault initialized (TUI)");
+            Some(Arc::new(v) as Arc<dyn temm1e_core::Vault>)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "TUI: vault init failed — browser authenticate disabled");
+            None
+        }
+    };
+
+    // ── Skill registry for TUI ──
+    let tui_skill_registry: Arc<tokio::sync::RwLock<temm1e_skills::SkillRegistry>> = {
+        let workspace_for_skills = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut reg = temm1e_skills::SkillRegistry::new(workspace_for_skills);
+        if let Err(e) = reg.load_skills().await {
+            tracing::warn!(error = %e, "TUI: failed to load skills");
+        }
+        let count = reg.list_skills().len();
+        if count > 0 {
+            tracing::info!(count, "Skills loaded (TUI)");
+        }
+        Arc::new(tokio::sync::RwLock::new(reg))
+    };
+
     let mut tools = temm1e_tools::create_tools(
         &setup.config.tools,
         None, // No channel for tool output — TUI handles display
@@ -184,9 +211,183 @@ pub async fn spawn_agent(
         None, // No setup link generator
         None, // No usage store for tools
         Some(shared_mode.clone()),
-        None, // No vault for TUI mode
-        None, // No skill registry for TUI mode
+        tui_vault.clone(),
+        Some(tui_skill_registry.clone()),
     );
+
+    // ── Custom script tools (user/agent-authored) ──
+    let tui_custom_tool_registry = Arc::new(temm1e_tools::CustomToolRegistry::new());
+    {
+        let custom_tools = tui_custom_tool_registry.load_tools();
+        if !custom_tools.is_empty() {
+            tracing::info!(
+                count = custom_tools.len(),
+                "Custom script tools loaded (TUI)"
+            );
+            tools.extend(custom_tools);
+        }
+        tools.push(Arc::new(temm1e_tools::SelfCreateTool::new(
+            tui_custom_tool_registry.clone(),
+        )));
+    }
+
+    // ── MCP servers (external tool sources) ──
+    #[cfg(feature = "mcp")]
+    {
+        let mgr = Arc::new(temm1e_mcp::McpManager::new());
+        mgr.connect_all().await;
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        let mcp_tools = mgr.bridge_tools(&tool_names).await;
+        if !mcp_tools.is_empty() {
+            tracing::info!(count = mcp_tools.len(), "MCP bridge tools loaded (TUI)");
+            tools.extend(mcp_tools);
+        }
+        tools.push(Arc::new(temm1e_mcp::McpManageTool::new(mgr.clone())));
+        tools.push(Arc::new(temm1e_mcp::SelfExtendTool::new()));
+        tools.push(Arc::new(temm1e_mcp::SelfAddMcpTool::new(mgr.clone())));
+        tracing::info!("Loaded MCP config (TUI)");
+    }
+
+    // ── TemDOS core registry (specialist sub-agents) ──
+    let tui_core_registry = {
+        let mut registry = temm1e_cores::CoreRegistry::new();
+        let ws_path = dirs::home_dir()
+            .map(|h| h.join(".temm1e"))
+            .unwrap_or_default();
+        registry
+            .load(Some(ws_path.as_path()))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "TUI: failed to load TemDOS cores");
+            });
+        if !registry.is_empty() {
+            tracing::info!(count = registry.len(), "TemDOS cores loaded (TUI)");
+        }
+        Arc::new(tokio::sync::RwLock::new(registry))
+    };
+
+    // ── TemDOS invoke_core tool (provider is already known at this point) ──
+    if !tui_core_registry.read().await.is_empty() {
+        let model_pricing =
+            temm1e_agent::budget::get_pricing_with_custom(&setup.provider_name, &setup.model);
+        let invoke_core = temm1e_cores::InvokeCoreTool::new(
+            tui_core_registry.clone(),
+            provider.clone(),
+            tools.clone(),
+            Arc::new(temm1e_agent::budget::BudgetTracker::new(
+                setup.config.agent.max_spend_usd,
+            )),
+            model_pricing,
+            setup.model.clone(),
+            setup.config.agent.max_context_tokens,
+            memory.clone(),
+        );
+        tools.push(Arc::new(invoke_core));
+        tracing::info!("TemDOS invoke_core tool registered (TUI)");
+    }
+
+    // ── Perpetuum (P1 critical — default-on per config) ──
+    let tui_perp_temporal: Arc<RwLock<String>> = Arc::new(RwLock::new(String::new()));
+    let tui_perpetuum: Option<Arc<temm1e_perpetuum::Perpetuum>> = if setup.config.perpetuum.enabled
+    {
+        let perp_db = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".temm1e/perpetuum.db");
+        let db_url = format!("sqlite:{}?mode=rwc", perp_db.display());
+        let perp_config = temm1e_perpetuum::PerpetualConfig {
+            enabled: true,
+            timezone: setup.config.perpetuum.timezone.clone(),
+            max_concerns: setup.config.perpetuum.max_concerns,
+            conscience: temm1e_perpetuum::ConscienceConfig {
+                idle_threshold_secs: setup
+                    .config
+                    .perpetuum
+                    .conscience_idle_threshold_secs
+                    .unwrap_or(900),
+                dream_threshold_secs: setup
+                    .config
+                    .perpetuum
+                    .conscience_dream_threshold_secs
+                    .unwrap_or(3600),
+            },
+            cognitive: temm1e_perpetuum::CognitiveConfig {
+                review_every_n_checks: setup.config.perpetuum.review_every_n_checks,
+                interpret_changes: true,
+            },
+            volition: temm1e_perpetuum::VolitionConfig {
+                enabled: setup.config.perpetuum.volition_enabled,
+                interval_secs: setup.config.perpetuum.volition_interval_secs,
+                max_actions_per_cycle: setup.config.perpetuum.volition_max_actions,
+                event_triggered: true,
+            },
+        };
+        // Channel map — TUI doesn't route Perpetuum notifications to a
+        // specific channel; we use an empty map (Perpetuum logs internally).
+        let channel_map: Arc<HashMap<String, Arc<dyn temm1e_core::Channel>>> =
+            Arc::new(HashMap::new());
+        match temm1e_perpetuum::Perpetuum::new(
+            perp_config,
+            provider.clone(),
+            setup.model.clone(),
+            channel_map,
+            &db_url,
+        )
+        .await
+        {
+            Ok(p) => {
+                let p = Arc::new(p);
+                let perp_tools = p.tools();
+                tracing::info!(count = perp_tools.len(), "Perpetuum tools loaded (TUI)");
+                tools.extend(perp_tools);
+                p.start();
+                tracing::info!("Perpetuum runtime started (TUI)");
+                // Populate initial temporal string so the first turn gets it.
+                let initial_temporal = p.temporal_injection("default").await;
+                *tui_perp_temporal.write().await = initial_temporal;
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "TUI: Perpetuum init failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // ── Eigen-Tune engine (opt-in) ──
+    let tui_eigentune_cfg: temm1e_distill::config::EigenTuneConfig = {
+        #[derive(serde::Deserialize, Default)]
+        struct ETWrapper {
+            #[serde(default)]
+            eigentune: temm1e_distill::config::EigenTuneConfig,
+        }
+        dirs::home_dir()
+            .and_then(|h| std::fs::read_to_string(h.join(".temm1e/config.toml")).ok())
+            .or_else(|| std::fs::read_to_string("temm1e.toml").ok())
+            .and_then(|c| toml::from_str::<ETWrapper>(&c).ok())
+            .map(|w| w.eigentune)
+            .unwrap_or_default()
+    };
+    let tui_eigen_tune_engine: Option<Arc<temm1e_distill::EigenTuneEngine>> =
+        if tui_eigentune_cfg.enabled {
+            let et_db = dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".temm1e/eigentune.db");
+            let et_url = format!("sqlite:{}?mode=rwc", et_db.display());
+            match temm1e_distill::EigenTuneEngine::new(&tui_eigentune_cfg, &et_url).await {
+                Ok(engine) => {
+                    tracing::info!("Eigen-Tune: engine initialized (TUI)");
+                    Some(Arc::new(engine))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "TUI: Eigen-Tune init failed");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
     // ── Load personality for TUI (matches server/CLI pattern) ──
     let tui_personality = Arc::new(temm1e_anima::personality::PersonalityConfig::load(
@@ -316,6 +517,16 @@ pub async fn spawn_agent(
             ),
         );
         tracing::info!("Tem Conscious initialized (TUI)");
+    }
+
+    // ── Perpetuum temporal context (if Perpetuum initialized) ──
+    if tui_perpetuum.is_some() {
+        agent = agent.with_perpetuum_temporal(tui_perp_temporal.clone());
+    }
+
+    // ── Eigen-Tune engine (if configured) ──
+    if let Some(et) = tui_eigen_tune_engine.clone() {
+        agent = agent.with_eigen_tune(et, tui_eigentune_cfg.enable_local_routing);
     }
 
     // ── Fill JIT spawn_swarm handle (TUI path) ──
