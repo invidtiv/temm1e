@@ -150,7 +150,8 @@ Key end-to-end paths verified by grep/compile:
 
 See `tems_lab/swarm/ab_jit_runner.sh` — executes the 12 scenarios against
 the release binary, captures metrics per scenario, writes
-`AB_RESULTS_LIVE.json`. Requires `ANTHROPIC_API_KEY` in env.
+`/tmp/ab_jit_live_results.json` (gitignored — raw per-run JSON is not
+committed to the repo). Requires `ANTHROPIC_API_KEY` in env.
 
 ### Running the live test
 
@@ -158,7 +159,7 @@ the release binary, captures metrics per scenario, writes
 # From repo root, after this branch is checked out + release built:
 export ANTHROPIC_API_KEY=sk-ant-...
 ./tems_lab/swarm/ab_jit_runner.sh
-cat tems_lab/swarm/AB_RESULTS_LIVE.json
+cat /tmp/ab_jit_live_results.json
 ```
 
 Expected wall-clock: ~15 minutes. Expected cost with Sonnet 4.6: ~$0.50-$1.00

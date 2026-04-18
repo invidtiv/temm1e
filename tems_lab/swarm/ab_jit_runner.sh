@@ -10,7 +10,10 @@
 # - Release binary built: cargo build --release --bin temm1e
 # - temm1e.toml in repo root with [hive] enabled = true (for swarm scenarios)
 #
-# Output: tems_lab/swarm/AB_RESULTS_LIVE.json
+# Output: /tmp/ab_jit_live_results.json (kept out of the repo — gitignored
+# artifacts, see .gitignore). Commit this file only if you've curated the
+# metrics into AB_REPORT_JIT.md; raw per-run JSON does not belong on the
+# tracked branch.
 #
 # Per scenario: we launch a fresh `temm1e chat` subprocess, pipe the prompt
 # over stdin, tail /tmp/temm1e.log for the turn's TurnUsage signals, measure
@@ -32,7 +35,7 @@ if [[ ! -x "$BINARY" ]]; then
     exit 1
 fi
 
-RESULTS="$REPO_ROOT/tems_lab/swarm/AB_RESULTS_LIVE.json"
+RESULTS="/tmp/ab_jit_live_results.json"
 LOGFILE=$(mktemp)
 
 # 12 scenarios from AB_REPORT_JIT.md §6
