@@ -203,12 +203,22 @@ impl FileStore for LocalFileStore {
         self.list_recursive(&search_dir, &mut results).await?;
 
         // Convert absolute paths back to relative keys.
+        //
+        // Normalize native path separators to `/` so the FileStore contract is
+        // consistent across Unix and Windows backends (S3-style keys use `/`).
+        // On Unix `to_string_lossy()` already yields `/`; on Windows it yields
+        // `\`, which would break cross-platform consumers comparing keys.
         let keys: Vec<String> = results
             .into_iter()
             .filter_map(|p| {
-                p.strip_prefix(&self.base_dir)
-                    .ok()
-                    .map(|rel| rel.to_string_lossy().to_string())
+                p.strip_prefix(&self.base_dir).ok().map(|rel| {
+                    let s = rel.to_string_lossy().to_string();
+                    if std::path::MAIN_SEPARATOR != '/' {
+                        s.replace(std::path::MAIN_SEPARATOR, "/")
+                    } else {
+                        s
+                    }
+                })
             })
             .collect();
 
