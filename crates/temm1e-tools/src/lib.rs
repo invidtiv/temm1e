@@ -18,6 +18,7 @@ pub mod credential_scrub;
 pub mod custom_tools;
 #[cfg(feature = "desktop-control")]
 pub mod desktop_tool;
+mod engram_tool;
 mod file;
 pub mod file_safety;
 mod git;
@@ -46,6 +47,7 @@ pub use code_grep::CodeGrepTool;
 pub use code_patch::CodePatchTool;
 pub use code_snapshot::CodeSnapshotTool;
 pub use custom_tools::{CustomToolRegistry, SelfCreateTool};
+pub use engram_tool::EngramTool;
 pub use file::{FileListTool, FileReadTool, FileWriteTool};
 pub use git::GitTool;
 pub use key_manage::KeyManageTool;
@@ -135,6 +137,7 @@ pub fn create_tools(
     let memory_for_skills = memory.clone(); // retain clone for skill tool
     if let Some(mem) = memory {
         tools.push(Arc::new(MemoryManageTool::new(Arc::clone(&mem))));
+        tools.push(Arc::new(EngramTool::new(Arc::clone(&mem))));
         tools.push(Arc::new(LambdaRecallTool::new(mem)));
     }
 
@@ -239,6 +242,7 @@ pub fn create_tools_with_browser(
     let memory_for_skills2 = memory.clone();
     if let Some(mem) = memory {
         tools.push(Arc::new(MemoryManageTool::new(Arc::clone(&mem))));
+        tools.push(Arc::new(EngramTool::new(Arc::clone(&mem))));
         tools.push(Arc::new(LambdaRecallTool::new(mem)));
     }
 

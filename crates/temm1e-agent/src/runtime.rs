@@ -232,6 +232,13 @@ pub struct AgentRuntime {
     /// When false (default), blueprints are injected as context text.
     /// This flag does NOT affect tool-level parallelism in executor.rs.
     parallel_phases: bool,
+    /// Whether to announce a "blueprint saved" notice after a blueprint is
+    /// actually persisted. Default false (silent). When enabled, the notice is
+    /// sent only after a real store succeeds — never optimistically (issue #64).
+    blueprint_notice: bool,
+    /// Engram permanent-memory configuration (default-on). Drives the always-on
+    /// permanent block injection and the post-run curator.
+    engram_config: temm1e_core::types::config::EngramConfig,
     /// Shared personality mode (PLAY or WORK). When set, the current mode is
     /// injected into the system prompt on every request so the LLM adapts
     /// its voice accordingly. Updated at runtime by the mode_switch tool.
@@ -334,6 +341,8 @@ impl AgentRuntime {
             model_pricing,
             v2_optimizations: true,
             parallel_phases: false,
+            blueprint_notice: false,
+            engram_config: temm1e_core::types::config::EngramConfig::default(),
             shared_mode: None,
             shared_memory_strategy: None,
             consciousness: None,
@@ -512,6 +521,8 @@ impl AgentRuntime {
             model_pricing,
             v2_optimizations: true,
             parallel_phases: false,
+            blueprint_notice: false,
+            engram_config: temm1e_core::types::config::EngramConfig::default(),
             shared_mode: None,
             shared_memory_strategy: None,
             consciousness: None,
@@ -626,6 +637,21 @@ impl AgentRuntime {
     /// tool-level parallelism in executor.rs.
     pub fn with_parallel_phases(mut self, enabled: bool) -> Self {
         self.parallel_phases = enabled;
+        self
+    }
+
+    /// Enable/disable the post-save "blueprint saved" notice. When disabled
+    /// (the default), blueprints are saved silently. When enabled, the notice
+    /// is sent only after a blueprint is actually persisted (issue #64) — it is
+    /// never appended optimistically, so it cannot claim a save that didn't happen.
+    pub fn with_blueprint_notice(mut self, enabled: bool) -> Self {
+        self.blueprint_notice = enabled;
+        self
+    }
+
+    /// Set the Engram permanent-memory configuration (default-on).
+    pub fn with_engram_config(mut self, cfg: temm1e_core::types::config::EngramConfig) -> Self {
+        self.engram_config = cfg;
         self
     }
 
@@ -1430,6 +1456,31 @@ impl AgentRuntime {
                 self.personality.as_deref(),
             )
             .await;
+
+            // ── Engram: prepend the permanent-memory block (scoped, capped) ──
+            if self.engram_config.enabled {
+                let (skull, _mo) = temm1e_core::types::model_registry::model_limits(&self.model);
+                let p_max = ((skull as f32) * self.engram_config.p_max_frac) as usize;
+                if p_max > 0 {
+                    let (block, _t) = crate::context::render_permanent_block(
+                        self.memory.as_ref(),
+                        &session.user_id,
+                        &session.chat_id,
+                        &self.engram_config,
+                        p_max,
+                    )
+                    .await;
+                    if !block.is_empty() {
+                        request.messages.insert(
+                            0,
+                            temm1e_core::types::message::ChatMessage {
+                                role: temm1e_core::types::message::Role::System,
+                                content: temm1e_core::types::message::MessageContent::Text(block),
+                            },
+                        );
+                    }
+                }
+            }
 
             // ── Personality mode injection ──────────────────────────────
             // P2: route to volatile tail so the stable base stays cacheable.
@@ -2379,7 +2430,11 @@ impl AgentRuntime {
                     let blueprint_was_loaded = active_blueprint.is_some();
 
                     if crate::blueprint::should_create_blueprint(&exec_meta, blueprint_was_loaded) {
-                        // Author a new blueprint in the background
+                        // Author a new blueprint in the background. The "saved"
+                        // notice (issue #64) is sent from INSIDE the task, only
+                        // after a real store succeeds — it is never appended here
+                        // optimistically, so it can no longer claim a save that
+                        // never happened. Gated on `blueprint_notice` (default off).
                         let prompt =
                             crate::blueprint::build_authoring_prompt(&session.history, &exec_meta);
                         let memory = Arc::clone(&self.memory);
@@ -2387,12 +2442,17 @@ impl AgentRuntime {
                         let model = self.model.clone();
                         let user_id = msg.user_id.clone();
                         let session_id = session.session_id.clone();
+                        let notice_enabled = self.blueprint_notice;
+                        let notice_tx = reply_tx.clone();
+                        let notice_chat_id = msg.chat_id.clone();
+                        let notice_reply_to = msg.id.clone();
 
                         tokio::spawn(async move {
                             match author_blueprint(provider.as_ref(), &model, &prompt, &user_id)
                                 .await
                             {
                                 Ok(bp) => {
+                                    let bp_name = bp.name.clone();
                                     let entry =
                                         crate::blueprint::to_memory_entry(&bp, Some(session_id));
                                     if let Err(e) = memory.store(entry).await {
@@ -2403,6 +2463,20 @@ impl AgentRuntime {
                                             name = %bp.name,
                                             "Blueprint authored and stored"
                                         );
+                                        // Truthful, post-hoc notice: only now that
+                                        // the blueprint is actually persisted.
+                                        if notice_enabled {
+                                            if let Some(tx) = notice_tx {
+                                                let _ = tx.send(OutboundMessage {
+                                                    chat_id: notice_chat_id,
+                                                    text: format!(
+                                                        "_Blueprint saved: {bp_name} — future runs will be faster._"
+                                                    ),
+                                                    reply_to: Some(notice_reply_to),
+                                                    parse_mode: None,
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -2410,9 +2484,6 @@ impl AgentRuntime {
                                 }
                             }
                         });
-
-                        // Notify user that a new blueprint is being saved
-                        reply_text.push_str("\n\n_Saving a new blueprint for this workflow — future runs will be faster._");
                     } else if blueprint_was_loaded {
                         // Refine the existing blueprint in the background
                         if let Some(ref loaded_bp) = active_blueprint {
@@ -2436,6 +2507,11 @@ impl AgentRuntime {
                                 crate::blueprint::TaskExecutionOutcome::Partial => {}
                             }
                             updated_bp.updated = chrono::Utc::now();
+                            let notice_enabled = self.blueprint_notice;
+                            let notice_tx = reply_tx.clone();
+                            let notice_chat_id = msg.chat_id.clone();
+                            let notice_reply_to = msg.id.clone();
+                            let notice_name = updated_bp.name.clone();
 
                             tokio::spawn(async move {
                                 match refine_blueprint(
@@ -2462,6 +2538,19 @@ impl AgentRuntime {
                                                 version = updated_bp.version,
                                                 "Blueprint refined and stored"
                                             );
+                                            // Truthful, post-hoc notice.
+                                            if notice_enabled {
+                                                if let Some(tx) = notice_tx {
+                                                    let _ = tx.send(OutboundMessage {
+                                                        chat_id: notice_chat_id,
+                                                        text: format!(
+                                                            "_Blueprint updated: {notice_name} — refined from this run._"
+                                                        ),
+                                                        reply_to: Some(notice_reply_to),
+                                                        parse_mode: None,
+                                                    });
+                                                }
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -2472,13 +2561,121 @@ impl AgentRuntime {
                                     }
                                 }
                             });
-
-                            // Notify user that the blueprint is being refined
-                            reply_text.push_str(
-                                "\n\n_Blueprint updated — workflow refined based on this run._",
-                            );
                         }
                     }
+                }
+
+                // ── Engram curator: auto-capture durable facts (gated, background) ──
+                // After a substantive turn, one bounded LLM call extracts durable
+                // facts and stores them as Agent-pinned Engram facts. Best-effort
+                // and detached so it never blocks the reply. User pins are never
+                // overwritten; subject_key dedups/supersedes.
+                if self.engram_config.enabled
+                    && self.engram_config.curator == "substantive"
+                    && msg
+                        .text
+                        .as_deref()
+                        .map(|t| t.trim().len() > 40)
+                        .unwrap_or(false)
+                {
+                    let digest = build_engram_digest(&session.history);
+                    let provider = Arc::clone(&self.provider);
+                    let model = self.model.clone();
+                    let memory = Arc::clone(&self.memory);
+                    let user_id = msg.user_id.clone();
+                    let chat_id = msg.chat_id.clone();
+                    let cap = self.engram_config.max_facts.min(3);
+                    tokio::spawn(async move {
+                        let facts = curate_engram_facts(provider.as_ref(), &model, &digest).await;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        for cf in facts.into_iter().take(cap) {
+                            let content = cf.content.trim().to_string();
+                            if content.is_empty() {
+                                continue;
+                            }
+                            let existing = match cf.subject_key.as_deref() {
+                                Some(sk) => memory
+                                    .engram_by_subject(sk, &user_id, &chat_id)
+                                    .await
+                                    .ok()
+                                    .flatten(),
+                                None => None,
+                            };
+                            // Trust boundary: never overwrite a user pin.
+                            if existing
+                                .as_ref()
+                                .is_some_and(|e| e.pinned_by == temm1e_core::PinnedBy::User)
+                            {
+                                continue;
+                            }
+                            // De-dup: if no subject match but a near-identical fact
+                            // already exists (e.g. the agent's own in-loop tool call
+                            // this same turn), skip to avoid a duplicate permanent entry.
+                            if existing.is_none() {
+                                let visible = memory
+                                    .engram_list(&user_id, &chat_id, 50)
+                                    .await
+                                    .unwrap_or_default();
+                                if visible.iter().any(|e| near_duplicate(&e.content, &content)) {
+                                    continue;
+                                }
+                            }
+                            let id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| {
+                                use std::hash::{Hash, Hasher};
+                                let mut h = std::collections::hash_map::DefaultHasher::new();
+                                format!(
+                                    "global|curator|{}",
+                                    cf.subject_key.as_deref().unwrap_or(&content)
+                                )
+                                .hash(&mut h);
+                                format!("eg{:016x}", h.finish())
+                            });
+                            let fact_type = match cf.fact_type.as_str() {
+                                "identity" => temm1e_core::FactType::Identity,
+                                "preference" => temm1e_core::FactType::Preference,
+                                "project" => temm1e_core::FactType::Project,
+                                "constraint" => temm1e_core::FactType::Constraint,
+                                _ => temm1e_core::FactType::Reference,
+                            };
+                            let summary: String = content
+                                .lines()
+                                .next()
+                                .unwrap_or(&content)
+                                .chars()
+                                .take(160)
+                                .collect();
+                            let essence: String = summary
+                                .split_whitespace()
+                                .take(6)
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let created = existing.as_ref().map(|e| e.created_at).unwrap_or(now);
+                            let fact = temm1e_core::EngramFact {
+                                id,
+                                content: content.clone(),
+                                summary,
+                                essence,
+                                fact_type,
+                                scope: temm1e_core::MemoryScope::Global,
+                                pinned_by: temm1e_core::PinnedBy::Agent,
+                                subject_key: cf.subject_key.clone(),
+                                importance: 4.0,
+                                created_at: created,
+                                last_accessed: now,
+                                tags: Vec::new(),
+                                links: Vec::new(),
+                            };
+                            match memory.engram_store(fact).await {
+                                Ok(()) => {
+                                    info!(content = %content, "Engram curator captured a durable fact")
+                                }
+                                Err(e) => warn!(error = %e, "Engram curator store failed"),
+                            }
+                        }
+                    });
                 }
 
                 // ── Task Queue: mark completed ───────────────────────
@@ -3275,6 +3472,130 @@ fn extract_latest_user_text(history: &[temm1e_core::types::message::ChatMessage]
                 .join(" "),
         })
         .unwrap_or_default()
+}
+
+// ── Engram curator (auto-capture durable facts; gated, background) ──
+
+#[derive(serde::Deserialize)]
+struct CuratedFact {
+    content: String,
+    #[serde(default)]
+    fact_type: String,
+    #[serde(default)]
+    subject_key: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CuratedFacts {
+    #[serde(default)]
+    facts: Vec<CuratedFact>,
+}
+
+/// Build a compact recent-conversation digest for the curator (last ~8 turns).
+fn build_engram_digest(history: &[temm1e_core::types::message::ChatMessage]) -> String {
+    use temm1e_core::types::message::{ContentPart, MessageContent, Role};
+    let recent: Vec<_> = history.iter().rev().take(8).collect();
+    let mut out = String::new();
+    for m in recent.into_iter().rev() {
+        let who = match m.role {
+            Role::User => "User",
+            Role::Assistant => "Tem",
+            _ => continue,
+        };
+        let text = match &m.content {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            let snippet: String = text.chars().take(500).collect();
+            out.push_str(&format!("{who}: {snippet}\n"));
+        }
+    }
+    out
+}
+
+/// Extract the first `{...}` JSON object span from possibly-fenced LLM output.
+fn extract_json_object(s: &str) -> &str {
+    match (s.find('{'), s.rfind('}')) {
+        (Some(a), Some(b)) if b >= a => &s[a..=b],
+        _ => s,
+    }
+}
+
+/// One LLM call: extract durable facts worth permanent memory from the digest.
+/// Best-effort — returns an empty vec on any failure or non-JSON output.
+async fn curate_engram_facts(
+    provider: &dyn Provider,
+    model: &str,
+    digest: &str,
+) -> Vec<CuratedFact> {
+    use temm1e_core::types::message::{CompletionRequest, MessageContent, Role};
+    if digest.trim().is_empty() {
+        return Vec::new();
+    }
+    let prompt = format!(
+        "From the conversation below, extract any DURABLE facts about the user or project \
+         worth remembering permanently across future sessions — standing preferences, \
+         identity details, hard constraints, or stable project facts. Ignore one-off or \
+         transient details. Respond with ONLY JSON of the form:\n\
+         {{\"facts\": [{{\"content\": \"<fact, third person>\", \"fact_type\": \
+         \"identity|preference|project|constraint|reference\", \"subject_key\": \"<short-stable-key>\"}}]}}\n\
+         If there is nothing durable, respond {{\"facts\": []}}.\n\nConversation:\n{digest}"
+    );
+    let request = CompletionRequest {
+        model: model.to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Text(prompt),
+        }],
+        tools: vec![],
+        max_tokens: None,
+        temperature: Some(0.2),
+        system: Some("You are a precise long-term-memory curator. Output only JSON.".to_string()),
+        system_volatile: None,
+    };
+    let resp = match provider.complete(request).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "Engram curator LLM call failed");
+            return Vec::new();
+        }
+    };
+    let text = extract_text_from_response(&resp.content);
+    match serde_json::from_str::<CuratedFacts>(extract_json_object(&text)) {
+        Ok(c) => c.facts,
+        Err(e) => {
+            debug!(error = %e, "Engram curator produced non-JSON output; skipping");
+            Vec::new()
+        }
+    }
+}
+
+/// Word-set Jaccard near-duplicate check (ignores order/short words). Used so the
+/// curator doesn't re-store a fact the agent already captured in-loop via the tool.
+fn near_duplicate(a: &str, b: &str) -> bool {
+    fn words(s: &str) -> std::collections::HashSet<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 2)
+            .map(|w| w.to_string())
+            .collect()
+    }
+    let (wa, wb) = (words(a), words(b));
+    if wa.is_empty() || wb.is_empty() {
+        return false;
+    }
+    let inter = wa.intersection(&wb).count() as f32;
+    let union = wa.union(&wb).count() as f32;
+    inter / union >= 0.6
 }
 
 /// Truncate a string to a maximum number of characters.

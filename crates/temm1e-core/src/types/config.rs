@@ -524,6 +524,9 @@ pub struct MemoryConfig {
     /// λ-Memory configuration — continuous decay with hash-based recall.
     #[serde(default)]
     pub lambda: LambdaMemoryConfig,
+    /// Engram permanent-memory configuration.
+    #[serde(default)]
+    pub engram: EngramConfig,
 }
 
 /// Active memory strategy — switchable at runtime via `/memory` command.
@@ -606,12 +609,80 @@ impl Default for MemoryConfig {
             connection_string: None,
             search: SearchConfig::default(),
             lambda: LambdaMemoryConfig::default(),
+            engram: EngramConfig::default(),
         }
     }
 }
 
 fn default_memory_backend() -> String {
     "sqlite".to_string()
+}
+
+/// Engram permanent-memory configuration. **Default-on**; when `enabled=false`,
+/// Engram degrades to a simple capped `MEMORY.md` the agent edits via the tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngramConfig {
+    /// Master switch (default true). Off ⇒ simple capped MEMORY.md fallback.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Curator cadence: "substantive" | "every:N" | "session-end" | "off".
+    #[serde(default = "default_engram_curator")]
+    pub curator: String,
+    /// Permanent-block budget as a fraction of the model window (default 0.10).
+    #[serde(default = "default_engram_pmax_frac")]
+    pub p_max_frac: f32,
+    /// Hard cap on the number of permanent facts injected (default 32).
+    #[serde(default = "default_engram_max_facts")]
+    pub max_facts: usize,
+    /// EMA weight on each new judgment (default 0.4).
+    #[serde(default = "default_engram_eta")]
+    pub eta: f32,
+    /// Promotion threshold (default 3.5).
+    #[serde(default = "default_engram_theta_up")]
+    pub theta_up: f32,
+    /// Demotion threshold (default 2.0).
+    #[serde(default = "default_engram_theta_down")]
+    pub theta_down: f32,
+    /// Anneal time constant in days (default 60).
+    #[serde(default = "default_engram_tau_days")]
+    pub tau_days: f32,
+}
+
+impl Default for EngramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            curator: default_engram_curator(),
+            p_max_frac: 0.10,
+            max_facts: 32,
+            eta: 0.4,
+            theta_up: 3.5,
+            theta_down: 2.0,
+            tau_days: 60.0,
+        }
+    }
+}
+
+fn default_engram_curator() -> String {
+    "substantive".to_string()
+}
+fn default_engram_pmax_frac() -> f32 {
+    0.10
+}
+fn default_engram_max_facts() -> usize {
+    32
+}
+fn default_engram_eta() -> f32 {
+    0.4
+}
+fn default_engram_theta_up() -> f32 {
+    3.5
+}
+fn default_engram_theta_down() -> f32 {
+    2.0
+}
+fn default_engram_tau_days() -> f32 {
+    60.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -870,6 +941,13 @@ pub struct AgentConfig {
     /// uses the same active provider+model — no cheap-classifier fallback.
     #[serde(default)]
     pub self_audit_enabled: bool,
+    /// Whether the agent announces "blueprint saved" after a blueprint is
+    /// actually persisted (issue #64). Default false — saving is silent. When
+    /// enabled, the notice fires only after a real store succeeds; it is never
+    /// emitted optimistically, and is NOT controllable by asking the LLM (the
+    /// text is runtime-generated). Use this flag to toggle it globally.
+    #[serde(default)]
+    pub blueprint_notice: bool,
 }
 
 impl Default for AgentConfig {
@@ -888,6 +966,7 @@ impl Default for AgentConfig {
             v2_optimizations: true,
             parallel_phases: false,
             self_audit_enabled: false,
+            blueprint_notice: false,
         }
     }
 }
@@ -1351,6 +1430,7 @@ mod tests {
                     keyword_weight: 0.2,
                 },
                 lambda: LambdaMemoryConfig::default(),
+                engram: EngramConfig::default(),
             },
             observability: ObservabilityConfig {
                 log_level: "debug".to_string(),
