@@ -1,6 +1,6 @@
 //! Desktop screen controller — capture screenshots and simulate input at the OS level.
 
-use crate::input::{InputEnv, InputRoute};
+use crate::input::{InputBackendPref, InputEnv, InputRoute};
 use crate::platform;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use image::ImageFormat;
@@ -34,15 +34,37 @@ pub struct DesktopController {
     monitor_index: usize,
     /// Chosen input backend for this host (enigo / ydotool / unavailable).
     route: InputRoute,
+    /// Native Wayland input via the RemoteDesktop portal. Established ONCE — eagerly
+    /// at startup via `warm_input()`, otherwise on first input use — then reused for
+    /// the whole process (one permission prompt per run). Preferred over ydotool on
+    /// Wayland because it positions the pointer EXACTLY (ydotool's absolute motion is
+    /// distorted by pointer acceleration).
+    #[cfg(target_os = "linux")]
+    libei: std::sync::OnceLock<Option<crate::libei::LibeiController>>,
+    /// Whether to attempt libei at all (true only on Wayland).
+    #[cfg(target_os = "linux")]
+    prefer_libei: bool,
 }
 
 impl DesktopController {
-    /// Create a new DesktopController for the given monitor index.
+    /// Create a new DesktopController for the given monitor index, choosing the
+    /// input backend from the `TEMM1E_INPUT_BACKEND` env var (see [`InputBackendPref`]).
+    /// For UNATTENDED Wayland hosts (e.g. a cloud VPS), set it to `ydotool` so the
+    /// libei portal prompt — which blocks waiting for a human — is never attempted.
     ///
     /// Screen capture is always available. Input simulation may fail on macOS
     /// if Accessibility permission has not been granted — in that case,
     /// `input_available()` returns false and input methods return clear errors.
     pub fn new(monitor_index: usize) -> Result<Self, Temm1eError> {
+        Self::with_backend(monitor_index, InputBackendPref::from_env())
+    }
+
+    /// Like [`new`](Self::new), but with an explicit backend preference (bypassing
+    /// the `TEMM1E_INPUT_BACKEND` env var).
+    pub fn with_backend(
+        monitor_index: usize,
+        backend: InputBackendPref,
+    ) -> Result<Self, Temm1eError> {
         // Verify the monitor exists
         let monitors = xcap::Monitor::all()
             .map_err(|e| Temm1eError::Tool(format!("Failed to enumerate monitors: {}", e)))?;
@@ -72,10 +94,63 @@ impl DesktopController {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        let prefer_libei = backend.attempt_libei(InputEnv::detect().is_wayland());
+        #[cfg(not(target_os = "linux"))]
+        let _ = backend;
+
         Ok(Self {
             monitor_index,
             route,
+            #[cfg(target_os = "linux")]
+            libei: std::sync::OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            prefer_libei,
         })
+    }
+
+    /// Lazily establish (once) and return the libei portal controller, if this is a
+    /// Wayland host and the portal is available. The first call blocks on the
+    /// permission prompt; failures cache as `None` so we fall back to ydotool/enigo
+    /// and never re-prompt.
+    #[cfg(target_os = "linux")]
+    fn libei(&self) -> Option<&crate::libei::LibeiController> {
+        if !self.prefer_libei {
+            return None;
+        }
+        self.libei
+            .get_or_init(|| match crate::libei::LibeiController::new() {
+                Ok(controller) => {
+                    tracing::info!(
+                        "Desktop input via libei (RemoteDesktop portal) — exact positioning"
+                    );
+                    Some(controller)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "libei unavailable; falling back to ydotool/enigo");
+                    None
+                }
+            })
+            .as_ref()
+    }
+
+    /// Eagerly establish the input session so it is ready BEFORE the first action —
+    /// front-loads startup for unattended / VPS operation (temm1e boots with its
+    /// hands already on the keyboard). On Wayland this warms the libei portal session
+    /// (and, if attended, surfaces its one permission prompt at startup rather than
+    /// mid-task); on X11/ydotool there is no session to establish, so it's a no-op.
+    /// Blocks while establishing, so call it from a background thread.
+    pub fn warm_input(&self) {
+        #[cfg(target_os = "linux")]
+        if self.prefer_libei {
+            if self.libei().is_some() {
+                tracing::info!("Desktop input warmed at startup — libei portal session ready");
+            } else {
+                tracing::warn!(
+                    "Desktop input warm-up: libei unavailable; will use the fallback route"
+                );
+            }
+        }
     }
 
     /// Whether input simulation (click, type, key) is available.
@@ -207,11 +282,33 @@ impl DesktopController {
             .map_err(|e| Temm1eError::Tool(format!("Failed to initialize input simulation: {}", e)))
     }
 
+    /// Convert a LOGICAL coordinate into what the enigo backend consumes on this OS.
+    ///
+    /// On Linux, enigo drives X11 via XTEST, whose coordinate space is the PHYSICAL
+    /// framebuffer — so a logical coordinate must be scaled by the DPI factor (a
+    /// no-op at scale 1.0). macOS (Core Graphics points) and Windows (DPI-unaware
+    /// SendInput) already accept logical coordinates and pass through unchanged. The
+    /// ydotool/Wayland path never calls this: it consumes logical layout coordinates
+    /// directly, so its callers pass logical values straight through.
+    fn enigo_coords(&self, x_logical: i32, y_logical: i32) -> (i32, i32) {
+        if cfg!(target_os = "linux") {
+            let scale = self.scale_factor().unwrap_or(1.0);
+            scale_point(x_logical, y_logical, scale)
+        } else {
+            (x_logical, y_logical)
+        }
+    }
+
     /// Move mouse to logical coordinates and click.
     pub fn click(&self, x: i32, y: i32) -> Result<(), Temm1eError> {
+        #[cfg(target_os = "linux")]
+        if let Some(libei) = self.libei() {
+            return libei.click(x, y);
+        }
         if let InputRoute::Ydotool = self.input_route()? {
             return crate::input::yd_click(x, y);
         }
+        let (x, y) = self.enigo_coords(x, y);
         let mut enigo = self.new_enigo()?;
 
         enigo
@@ -227,9 +324,14 @@ impl DesktopController {
 
     /// Double-click at logical coordinates.
     pub fn double_click(&self, x: i32, y: i32) -> Result<(), Temm1eError> {
+        #[cfg(target_os = "linux")]
+        if let Some(libei) = self.libei() {
+            return libei.double_click(x, y);
+        }
         if let InputRoute::Ydotool = self.input_route()? {
             return crate::input::yd_double_click(x, y);
         }
+        let (x, y) = self.enigo_coords(x, y);
         let mut enigo = self.new_enigo()?;
 
         enigo
@@ -248,9 +350,14 @@ impl DesktopController {
 
     /// Right-click at logical coordinates.
     pub fn right_click(&self, x: i32, y: i32) -> Result<(), Temm1eError> {
+        #[cfg(target_os = "linux")]
+        if let Some(libei) = self.libei() {
+            return libei.right_click(x, y);
+        }
         if let InputRoute::Ydotool = self.input_route()? {
             return crate::input::yd_right_click(x, y);
         }
+        let (x, y) = self.enigo_coords(x, y);
         let mut enigo = self.new_enigo()?;
 
         enigo
@@ -266,6 +373,10 @@ impl DesktopController {
 
     /// Type a text string.
     pub fn type_text(&self, text: &str) -> Result<(), Temm1eError> {
+        #[cfg(target_os = "linux")]
+        if let Some(libei) = self.libei() {
+            return libei.type_text(text);
+        }
         if let InputRoute::Ydotool = self.input_route()? {
             return crate::input::yd_type(text);
         }
@@ -281,6 +392,10 @@ impl DesktopController {
 
     /// Press a key combination (e.g., "cmd+c", "ctrl+shift+a", "enter", "tab").
     pub fn key_combo(&self, combo: &str) -> Result<(), Temm1eError> {
+        #[cfg(target_os = "linux")]
+        if let Some(libei) = self.libei() {
+            return libei.key_combo(combo);
+        }
         if let InputRoute::Ydotool = self.input_route()? {
             return crate::input::yd_key(combo);
         }
@@ -313,6 +428,7 @@ impl DesktopController {
                     .into(),
             ));
         }
+        let (x, y) = self.enigo_coords(x, y);
         let mut enigo = self.new_enigo()?;
 
         enigo
@@ -336,9 +452,15 @@ impl DesktopController {
 
     /// Drag from (x1, y1) to (x2, y2).
     pub fn drag(&self, x1: i32, y1: i32, x2: i32, y2: i32) -> Result<(), Temm1eError> {
+        #[cfg(target_os = "linux")]
+        if let Some(libei) = self.libei() {
+            return libei.drag(x1, y1, x2, y2);
+        }
         if let InputRoute::Ydotool = self.input_route()? {
             return crate::input::yd_drag(x1, y1, x2, y2);
         }
+        let (x1, y1) = self.enigo_coords(x1, y1);
+        let (x2, y2) = self.enigo_coords(x2, y2);
         let mut enigo = self.new_enigo()?;
 
         enigo
@@ -357,6 +479,19 @@ impl DesktopController {
         tracing::debug!(x1, y1, x2, y2, "Desktop drag");
         Ok(())
     }
+}
+
+/// Scale a LOGICAL point to PHYSICAL pixels (nearest integer), for backends whose
+/// coordinate space is the physical framebuffer (enigo/X11). Identity at scale 1.0
+/// or non-positive scale, so it never perturbs the common unscaled case.
+fn scale_point(x_logical: i32, y_logical: i32, scale: f32) -> (i32, i32) {
+    if scale <= 0.0 || (scale - 1.0).abs() < f32::EPSILON {
+        return (x_logical, y_logical);
+    }
+    (
+        (x_logical as f32 * scale).round() as i32,
+        (y_logical as f32 * scale).round() as i32,
+    )
 }
 
 #[cfg(test)]
@@ -430,5 +565,18 @@ mod tests {
         let ctrl = DesktopController::new(0).expect("Primary monitor");
         let s = ctrl.scale_factor().expect("Scale factor");
         assert!(s >= 1.0, "Scale factor should be >= 1.0");
+    }
+
+    #[test]
+    fn scale_point_is_identity_at_1x_and_scales_on_hidpi() {
+        assert_eq!(scale_point(100, 200, 1.0), (100, 200), "1.0 is a no-op");
+        assert_eq!(scale_point(0, 0, 2.0), (0, 0));
+        assert_eq!(scale_point(100, 200, 2.0), (200, 400), "2x → physical");
+        assert_eq!(scale_point(100, 200, 1.5), (150, 300), "fractional scale");
+        assert_eq!(
+            scale_point(50, 50, 0.0),
+            (50, 50),
+            "non-positive scale guarded"
+        );
     }
 }
